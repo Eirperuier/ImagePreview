@@ -139,6 +139,7 @@ public final class LoupeController {
     private var dragAxis: DismissDrag.Axis = .vertical
     private var hiddenSource: LoupeSource?
     private var closingSource: LoupeSource?
+    private var landing: Landing?
 
     private lazy var gestureTarget = GestureTarget(self)
     private lazy var dismissPan = UIPanGestureRecognizer(target: gestureTarget, action: #selector(GestureTarget.pan(_:)))
@@ -324,10 +325,15 @@ public final class LoupeController {
 
     /// The thumbnail's frame in the viewer, if it is on screen.
     private func visibleFrame(of source: LoupeSource?) -> CGRect? {
-        guard let source, let view = source.view, view.window != nil, let root = root?.view else { return nil }
-        let frame = view.convert(view.bounds, to: root)
-        guard frame.width > 1, frame.height > 1, frame.intersects(root.bounds) else { return nil }
+        guard let frame = frame(of: source), let root = root?.view, frame.intersects(root.bounds) else { return nil }
         return frame
+    }
+
+    /// The thumbnail's frame in the viewer, on screen or not, while it is in a window.
+    private func frame(of source: LoupeSource?) -> CGRect? {
+        guard let view = source?.view, view.window != nil, let root = root?.view else { return nil }
+        let frame = view.convert(view.bounds, to: root)
+        return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
     /// A picture of the thumbnail as it is on screen, for when there is no image to fly yet.
@@ -402,8 +408,13 @@ public final class LoupeController {
         source?.setHidden(true)
         closingSource = source
 
-        animateHero(to: closedTarget(source), spring: configuration.transitionSpring, velocity: velocity) { [weak self] in
+        let target = closedTarget(source)
+        animateHero(to: target, spring: configuration.transitionSpring, velocity: velocity) { [weak self] in
             self?.didClose()
+        }
+        // Flying home to a thumbnail: follow it if the page moves under it.
+        if target.backdrop == 0, target.opacity > 0, let frame = visibleFrame(of: source), let springs {
+            landing = Landing(frame: frame, springs: springs)
         }
     }
 
@@ -424,6 +435,7 @@ public final class LoupeController {
         closingSource?.setHidden(false)
         hiddenSource = nil
         closingSource = nil
+        landing = nil
         loads.values.forEach { $0.cancel() }
         onDidDismiss?()
         // The thumbnail shows again on the next frame (SwiftUI may take one more); the image
@@ -557,6 +569,12 @@ public final class LoupeController {
 
     private func tick(_ dt: Double) {
         guard var springs else { return ticker.stop() }
+        if phase == .closing, var landing, let frame = frame(of: closingSource) {
+            if !landing.follow(frame, springs: &springs), let target = sourceState(closingSource) {
+                springs.retarget(target.vector)
+            }
+            self.landing = landing
+        }
         let done = springs.step(dt)
         self.springs = springs
         heroState = HeroState(springs.values)

@@ -43,6 +43,15 @@ struct SpringVector {
         self.velocities = velocities ?? Array(repeating: 0, count: values.count)
     }
 
+    /// Moves the targets by `delta`, and the values by `carried` of it: a value carried
+    /// all the way moves rigidly with its target, keeping its distance and velocity.
+    mutating func shift(_ delta: [Double], carried: Double) {
+        for i in values.indices {
+            targets[i] += delta[i]
+            values[i] += delta[i] * carried
+        }
+    }
+
     mutating func retarget(_ targets: [Double], spring: LoupeSpring? = nil) {
         self.targets = targets
         if let spring { self.spring = spring }
@@ -81,14 +90,19 @@ struct SpringVector {
 }
 
 /// Calls back once per display frame while running, with the time to advance by.
+///
+/// The display link only says a frame is due; the callback runs at the end of that turn of
+/// the run loop, just before the frame's layout and commit. By then scroll views have moved
+/// for this frame, so an image placed relative to content on screen is placed where the
+/// content is now, not where it was a frame ago (which reads as the image drifting).
 @MainActor
 final class FrameTicker: NSObject {
     private let tick: (Double) -> Void
     private var lastTimestamp: CFTimeInterval?
-    #if canImport(UIKit)
+    private var pending: Double?
     private var link: CADisplayLink?
-    #else
-    private var link: CADisplayLink?
+    private var observer: CFRunLoopObserver?
+    #if !canImport(UIKit)
     private weak var view: LoupePlatformView?
     #endif
 
@@ -108,6 +122,7 @@ final class FrameTicker: NSObject {
     func start() {
         guard link == nil else { return }
         lastTimestamp = nil
+        pending = nil
         #if canImport(UIKit)
         let link = CADisplayLink(target: WeakTarget(self), selector: #selector(WeakTarget.fire(_:)))
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
@@ -117,19 +132,37 @@ final class FrameTicker: NSObject {
         #endif
         link.add(to: .main, forMode: .common)
         self.link = link
+
+        // Before the layout pass and the Core Animation commit (order 2,000,000) of the same turn.
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 1_998_000) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.flush() }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        self.observer = observer
     }
 
     func stop() {
         link?.invalidate()
         link = nil
+        if let observer {
+            CFRunLoopObserverInvalidate(observer)
+            self.observer = nil
+        }
         lastTimestamp = nil
+        pending = nil
     }
 
     fileprivate func fire(_ link: CADisplayLink) {
         let now = link.targetTimestamp
         let dt = lastTimestamp.map { now - $0 } ?? (link.targetTimestamp - link.timestamp)
         lastTimestamp = now
-        tick(max(dt, 1.0 / 240))
+        pending = (pending ?? 0) + max(dt, 1.0 / 240)
+    }
+
+    private func flush() {
+        guard let dt = pending else { return }
+        pending = nil
+        tick(dt)
     }
 }
 

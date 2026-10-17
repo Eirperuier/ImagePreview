@@ -65,3 +65,28 @@ import Testing
     #expect(settled)
     #expect(spring.values == [50])
 }
+
+@Test func anImageFlyingHomeIsCarriedByItsThumbnailAsItLands() {
+    let thumbnail = CGRect(x: 20, y: 300, width: 100, height: 100)
+    let target = HeroState.source(frame: thumbnail, imageSize: CGSize(width: 100, height: 100), mode: .fill, cornerRadius: 12)
+    var springs = SpringVector(values: HeroState.presented(CGRect(x: 0, y: 200, width: 400, height: 400)).vector,
+                               tolerances: HeroState.tolerances, spring: .transition)
+    springs.retarget(target.vector)
+    var landing = Landing(frame: thumbnail, springs: springs)
+
+    // Still far: the page scrolls 50 up; the landing spot moves, the image barely does.
+    let before = springs.values[1]
+    #expect(landing.follow(thumbnail.offsetBy(dx: 0, dy: -50), springs: &springs))
+    #expect(springs.targets[1] == Double(target.image.minY) - 50)
+    #expect(abs(springs.values[1] - before) < 1)
+
+    // Nearly there: the next 50 carry the image along with the thumbnail.
+    for _ in 0..<40 { _ = springs.step(1.0 / 120) }
+    let gap = springs.values[1] - springs.targets[1]
+    #expect(landing.follow(thumbnail.offsetBy(dx: 0, dy: -100), springs: &springs))
+    #expect(abs((springs.values[1] - springs.targets[1]) - gap) < 1)
+
+    // It lands exactly on the thumbnail where it now is.
+    while !springs.step(1.0 / 120) {}
+    #expect(HeroState(springs.values).image.minY == target.image.minY - 100)
+}

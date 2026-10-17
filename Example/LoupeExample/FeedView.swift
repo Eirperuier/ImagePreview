@@ -55,7 +55,7 @@ struct PostView: View {
             }
         }
         .padding(16)
-        .loupe(selection: $opened, items: post.photos) { photo in
+        .loupe(selection: $opened, items: post.photos, configuration: .example) { photo in
             photo.image
         }
     }
@@ -106,5 +106,16 @@ struct MediaGrid: View {
             .contentShape(Rectangle())
             .loupeSource(photo.id, cornerRadius: 12)
             .onTapGesture { open(photo.id) }
+    }
+}
+
+extension LoupeConfiguration {
+    /// The defaults; `LOUPE_TRANSITION_RESPONSE` (seconds) slows the transitions down to watch them.
+    static var example: LoupeConfiguration {
+        var configuration = LoupeConfiguration()
+        if let value = ProcessInfo.processInfo.environment["LOUPE_TRANSITION_RESPONSE"], let response = Double(value) {
+            configuration.transitionSpring = LoupeSpring(response: response, dampingRatio: 1)
+        }
+        return configuration
     }
 }

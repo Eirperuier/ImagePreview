@@ -132,6 +132,7 @@ public final class LoupeController {
     private var tracker = VelocityTracker()
     private var hiddenSource: LoupeSource?
     private var closingSource: LoupeSource?
+    private var landing: Landing?
 
     /// Where the images go: the window's content area, below the title bar (the backdrop covers it all).
     private var area: CGRect {
@@ -293,10 +294,15 @@ public final class LoupeController {
     }
 
     private func visibleFrame(of source: LoupeSource?) -> CGRect? {
-        guard let source, let view = source.view, let overlay, view.window === overlay.window else { return nil }
-        let frame = view.convert(view.bounds, to: overlay)
-        guard frame.width > 1, frame.height > 1, frame.intersects(overlay.bounds) else { return nil }
+        guard let frame = frame(of: source), let overlay, frame.intersects(overlay.bounds) else { return nil }
         return frame
+    }
+
+    /// The thumbnail's frame in the viewer, on screen or not, while it is in the viewer's window.
+    private func frame(of source: LoupeSource?) -> CGRect? {
+        guard let view = source?.view, let overlay, view.window === overlay.window else { return nil }
+        let frame = view.convert(view.bounds, to: overlay)
+        return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
     private func snapshot(_ source: LoupeSource?) -> NSImage? {
@@ -361,8 +367,13 @@ public final class LoupeController {
         hiddenSource = source
         source?.setHidden(true)
         closingSource = source
-        animateHero(to: closedTarget(source), spring: configuration.transitionSpring, velocity: velocity) { [weak self] in
+        let target = closedTarget(source)
+        animateHero(to: target, spring: configuration.transitionSpring, velocity: velocity) { [weak self] in
             self?.didClose()
+        }
+        // Flying home to a thumbnail: follow it if the page scrolls under it.
+        if target.backdrop == 0, target.opacity > 0, let frame = visibleFrame(of: source), let springs {
+            landing = Landing(frame: frame, springs: springs)
         }
     }
 
@@ -377,6 +388,7 @@ public final class LoupeController {
         closingSource?.setHidden(false)
         hiddenSource = nil
         closingSource = nil
+        landing = nil
         loads.values.forEach { $0.cancel() }
         onDidDismiss?()
         Task { @MainActor [self] in
@@ -546,6 +558,12 @@ public final class LoupeController {
             layoutPages()
         }
         if var springs {
+            if phase == .closing, var landing, let frame = frame(of: closingSource) {
+                if !landing.follow(frame, springs: &springs), let target = sourceState(closingSource) {
+                    springs.retarget(target.vector)
+                }
+                self.landing = landing
+            }
             let done = springs.step(dt)
             self.springs = springs
             heroState = HeroState(springs.values)
@@ -579,6 +597,11 @@ public final class LoupeController {
 
         override var isFlipped: Bool { true }
         override var acceptsFirstResponder: Bool { true }
+
+        // While the image flies home, the window underneath takes clicks and scrolls again.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            controller?.isClosing == true ? nil : super.hitTest(point)
+        }
 
         override func layout() {
             super.layout()

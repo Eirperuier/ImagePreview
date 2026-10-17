@@ -49,4 +49,27 @@ final class GestureTests: XCTestCase {
         at(0.5, 0.6).press(forDuration: 0.05, thenDragTo: at(0.4, 0.3), withVelocity: 900, thenHoldForDuration: 0)
         sleep(2)
     }
+
+    /// Closes an image with a slow transition and scrolls the page while it flies home:
+    /// the image has to stay on course for its thumbnail and land on it where it now is.
+    @MainActor
+    func testScrollingWhileAnImageFliesHome() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["LOUPE_TRANSITION_RESPONSE"] = "1.6"
+        app.launch()
+        let image = app.images.element(boundBy: 2)
+        XCTAssertTrue(image.waitForExistence(timeout: 15))
+        let screen = app.windows.firstMatch
+        func at(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+
+        image.tap()
+        sleep(3)
+        app.buttons["Close"].tap()
+        // The page underneath scrolls up, then back down, while the image is on its way.
+        at(0.5, 0.75).press(forDuration: 0.02, thenDragTo: at(0.5, 0.55), withVelocity: 600, thenHoldForDuration: 0.1)
+        at(0.5, 0.5).press(forDuration: 0.02, thenDragTo: at(0.5, 0.62), withVelocity: 600, thenHoldForDuration: 0.1)
+        sleep(3)
+    }
 }

@@ -186,3 +186,35 @@ struct DismissDrag {
         return axis == .vertical ? abs(a) > extent * 0.22 : a > extent * 0.22
     }
 }
+
+/// Keeps an image flying home on course for its thumbnail while the thumbnail moves (the page
+/// scrolls under it). The landing spot moves with the thumbnail; the image is carried along
+/// by as much as it has arrived: barely while it is still large and far, rigidly as it lands.
+/// So it neither lags behind the content nor swings after it, and lands exactly.
+struct Landing {
+    private(set) var frame: CGRect
+    private let startDistance: Double
+
+    init(frame: CGRect, springs: SpringVector) {
+        self.frame = frame
+        self.startDistance = max(Self.distance(springs), 1)
+    }
+
+    private static func distance(_ springs: SpringVector) -> Double {
+        (0..<4).reduce(0) { $0 + abs(springs.values[$1] - springs.targets[$1]) }
+    }
+
+    /// Follows the thumbnail to `newFrame`. Returns false if it changed size, which a move
+    /// does not do: then the caller works the landing out afresh.
+    mutating func follow(_ newFrame: CGRect, springs: inout SpringVector) -> Bool {
+        defer { frame = newFrame }
+        guard abs(newFrame.width - frame.width) < 0.5, abs(newFrame.height - frame.height) < 0.5 else { return false }
+        let dx = Double(newFrame.minX - frame.minX), dy = Double(newFrame.minY - frame.minY)
+        guard dx != 0 || dy != 0 else { return true }
+        var delta = [Double](repeating: 0, count: HeroState.count)
+        delta[0] = dx; delta[1] = dy; delta[4] = dx; delta[5] = dy
+        let arrived = min(max(1 - Self.distance(springs) / startDistance, 0), 1)
+        springs.shift(delta, carried: arrived)
+        return true
+    }
+}
