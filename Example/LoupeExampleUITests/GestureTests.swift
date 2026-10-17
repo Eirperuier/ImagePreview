@@ -31,6 +31,18 @@ final class GestureTests: XCTestCase {
         at(0.5, 0.5).press(forDuration: 0.05, thenDragTo: at(0.62, 0.8), withVelocity: 600, thenHoldForDuration: 0.3)
         sleep(2)
 
+        // The first image, dragged right: there is nothing before it, so it closes.
+        first.tap()
+        sleep(1)
+        at(0.3, 0.5).press(forDuration: 0.05, thenDragTo: at(0.8, 0.55), withVelocity: 500, thenHoldForDuration: 0.3)
+        sleep(2)
+
+        // The last image, flicked left: it closes too.
+        images.element(boundBy: 1).tap()
+        sleep(1)
+        at(0.8, 0.5).press(forDuration: 0.05, thenDragTo: at(0.45, 0.5), withVelocity: 1200, thenHoldForDuration: 0)
+        sleep(2)
+
         // Open the long screenshot, drag it upward and let go.
         images.element(boundBy: 1).tap()
         sleep(1)

@@ -117,14 +117,58 @@ struct HeroState: Equatable {
 /// as it gets farther from where it started (about the point that was grabbed, so that point
 /// stays under the finger), and the backdrop lightens to show what is underneath.
 struct DismissDrag {
+    /// Which way the drag closes: up or down, or past the first or last image sideways.
+    enum Axis: Equatable {
+        case vertical
+        /// Rightward, past the first image.
+        case right
+        /// Leftward, past the last image.
+        case left
+    }
+
     let start: HeroState
     let anchor: CGPoint
-    let containerHeight: CGFloat
+    let axis: Axis
+    /// The container's size, which sets how far a drag goes before it is all the way out.
+    let container: CGSize
+
+    init(start: HeroState, anchor: CGPoint, axis: Axis = .vertical, container: CGSize) {
+        self.start = start
+        self.anchor = anchor
+        self.axis = axis
+        self.container = container
+    }
+
+    /// The axis a drag starting with `velocity` closes along, if it closes at all: up or down
+    /// always; sideways only where there is no image to move to.
+    static func axis(for velocity: CGPoint, index: Int, count: Int) -> Axis? {
+        if abs(velocity.y) > abs(velocity.x) { return .vertical }
+        if velocity.x > 0, index == 0 { return .right }
+        if velocity.x < 0, index == count - 1 { return .left }
+        return nil
+    }
+
+    private var extent: CGFloat { max(axis == .vertical ? container.height : container.width, 1) }
+
+    /// How far the drag has gone in the way it closes, signed: negative is back past where it started.
+    private func along(_ p: CGPoint) -> CGFloat {
+        switch axis {
+        case .vertical: p.y
+        case .right: p.x
+        case .left: -p.x
+        }
+    }
+
+    /// How far the drag has gone toward closing (up and down both count).
+    private func distance(_ t: CGPoint) -> CGFloat {
+        axis == .vertical ? abs(t.y) : max(along(t), 0)
+    }
 
     func state(translation t: CGPoint) -> HeroState {
-        let progress = min(abs(t.y) / max(containerHeight, 1), 1)
+        let d = distance(t)
+        let progress = min(d / extent, 1)
         let scale = max(1 - progress * 0.8, 0.55)
-        let backdrop = start.backdrop * max(1 - abs(t.y) / max(containerHeight * 0.7, 1), 0)
+        let backdrop = start.backdrop * max(1 - d / (extent * 0.7), 0)
         return HeroState(
             image: start.image.scaled(scale, about: anchor, offset: t),
             clip: start.clip.scaled(scale, about: anchor, offset: t),
@@ -135,9 +179,10 @@ struct DismissDrag {
     }
 
     /// Whether letting go here closes the viewer: a flick away from the middle does; a flick
-    /// back toward it does not; a slow release does once the image is a fair way from the middle.
-    static func closes(translation t: CGPoint, velocity v: CGPoint, containerHeight: CGFloat) -> Bool {
-        if abs(v.y) > 700 { return t.y * v.y >= 0 }
-        return abs(t.y) > containerHeight * 0.22
+    /// back toward it does not; a slow release does once the image is a fair way out.
+    func closes(translation t: CGPoint, velocity v: CGPoint) -> Bool {
+        let a = along(t), va = along(v)
+        if abs(va) > 700 { return axis == .vertical ? a * va >= 0 : va > 0 }
+        return axis == .vertical ? abs(a) > extent * 0.22 : a > extent * 0.22
     }
 }

@@ -136,6 +136,7 @@ public final class LoupeController {
     private lazy var ticker = FrameTicker { [weak self] dt in self?.tick(dt) }
 
     private var drag: DismissDrag?
+    private var dragAxis: DismissDrag.Axis = .vertical
     private var hiddenSource: LoupeSource?
     private var closingSource: LoupeSource?
 
@@ -162,10 +163,11 @@ public final class LoupeController {
         pager.scrollsToTop = false
         pager.delegate = gestureDelegate
         pager.isHidden = true
-        // A vertical drag on an unzoomed image is the drag that closes, not a swipe.
+        // On an unzoomed image, a drag up or down, or sideways past the first or last image,
+        // is the drag that closes, not a swipe.
         pager.shouldBeginPan = { [weak self] velocity in
             guard let self else { return true }
-            return abs(velocity.x) >= abs(velocity.y) || self.currentPage?.isZoomed == true
+            return self.currentPage?.isZoomed == true || self.dismissAxis(for: velocity) == nil
         }
         view.addSubview(pager)
 
@@ -452,8 +454,13 @@ public final class LoupeController {
 
     // MARK: Dragging
 
+    private func dismissAxis(for velocity: CGPoint) -> DismissDrag.Axis? {
+        DismissDrag.axis(for: velocity, index: index, count: count)
+    }
+
     fileprivate func canBeginDrag(velocity: CGPoint) -> Bool {
-        guard abs(velocity.y) > abs(velocity.x) else { return false }
+        guard let axis = dismissAxis(for: velocity) else { return false }
+        dragAxis = axis
         switch phase {
         case .opening, .restoring:
             return true
@@ -472,16 +479,16 @@ public final class LoupeController {
             if phase == .presented { liftHero() }
             stopSprings()
             phase = .dragging
-            drag = DismissDrag(start: heroState, anchor: pan.location(in: root), containerHeight: root.bounds.height)
+            drag = DismissDrag(start: heroState, anchor: pan.location(in: root), axis: dragAxis, container: root.bounds.size)
             setAccessories(visible: false)
         case .changed:
             guard let drag else { return }
             setHero(drag.state(translation: pan.translation(in: root)))
         case .ended, .cancelled, .failed:
-            guard drag != nil else { return }
-            drag = nil
+            guard let drag else { return }
+            self.drag = nil
             let t = pan.translation(in: root), v = pan.velocity(in: root)
-            if pan.state == .ended, DismissDrag.closes(translation: t, velocity: v, containerHeight: root.bounds.height) {
+            if pan.state == .ended, drag.closes(translation: t, velocity: v) {
                 close(velocity: v)
             } else {
                 phase = .restoring

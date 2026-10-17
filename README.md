@@ -3,7 +3,7 @@
 A photo viewer for Apple platforms that opens out of the thumbnail you tapped and closes back into it.
 
 - **Seamless.** The image grows out of its thumbnail (crop, corner radius and all) and lands back in it exactly; the thumbnail hides while its image is out.
-- **Follows your finger.** Drag an image in any direction: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
+- **Follows your finger.** Drag an image up or down, or sideways past the first or last image: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
@@ -12,7 +12,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 |---|---|---|
 | Move between images | swipe | two-finger swipe, drag, ← → |
 | Zoom | pinch, double-tap | pinch, double-click |
-| Close | drag up or down, close button | two-finger swipe or drag up or down, click outside the image, Esc, Space |
+| Close | drag up or down, or sideways past the first or last image; close button | the same with two fingers or the mouse; click outside the image, Esc, Space |
 | Accessories | tap to hide and show | click the image to hide and show |
 
 ## Installation

@@ -12,7 +12,7 @@ import Testing
 @Test func theGrabbedPointStaysUnderTheFinger() {
     let start = HeroState.presented(CGRect(x: 0, y: 100, width: 400, height: 600))
     let anchor = CGPoint(x: 120, y: 300)
-    let drag = DismissDrag(start: start, anchor: anchor, containerHeight: 800)
+    let drag = DismissDrag(start: start, anchor: anchor, container: CGSize(width: 400, height: 800))
     let t = CGPoint(x: 30, y: 200)
     let state = drag.state(translation: t)
     // The grabbed point is at the same fraction of the image before and after.
@@ -25,14 +25,31 @@ import Testing
 }
 
 @Test func aFlickClosesAndAPullBackStays() {
+    let drag = DismissDrag(start: .presented(.zero), anchor: .zero, container: CGSize(width: 400, height: 800))
     func closes(_ ty: CGFloat, _ vy: CGFloat) -> Bool {
-        DismissDrag.closes(translation: CGPoint(x: 0, y: ty), velocity: CGPoint(x: 0, y: vy), containerHeight: 800)
+        drag.closes(translation: CGPoint(x: 0, y: ty), velocity: CGPoint(x: 0, y: vy))
     }
     #expect(closes(30, 1200))
     #expect(closes(-30, -1200))
     #expect(closes(-200, 0))
     #expect(!closes(100, 0))
     #expect(!closes(200, -900))
+}
+
+@Test func sidewaysClosesOnlyPastTheEnds() {
+    #expect(DismissDrag.axis(for: CGPoint(x: 500, y: 20), index: 0, count: 3) == .right)
+    #expect(DismissDrag.axis(for: CGPoint(x: -500, y: 20), index: 0, count: 3) == nil)
+    #expect(DismissDrag.axis(for: CGPoint(x: -500, y: 20), index: 2, count: 3) == .left)
+    #expect(DismissDrag.axis(for: CGPoint(x: 500, y: 20), index: 1, count: 3) == nil)
+    #expect(DismissDrag.axis(for: CGPoint(x: 20, y: -500), index: 1, count: 3) == .vertical)
+
+    let right = DismissDrag(start: .presented(.zero), anchor: .zero, axis: .right, container: CGSize(width: 400, height: 800))
+    #expect(right.closes(translation: CGPoint(x: 20, y: 0), velocity: CGPoint(x: 900, y: 0)))
+    #expect(right.closes(translation: CGPoint(x: 120, y: 0), velocity: .zero))
+    #expect(!right.closes(translation: CGPoint(x: 60, y: 0), velocity: .zero))
+    // Pulled back past where it started: that is not closing.
+    #expect(!right.closes(translation: CGPoint(x: -150, y: 0), velocity: .zero))
+    #expect(!right.closes(translation: CGPoint(x: 150, y: 0), velocity: CGPoint(x: -900, y: 0)))
 }
 
 @Test func aSpringArrivesAndKeepsItsVelocityWhenRetargeted() {

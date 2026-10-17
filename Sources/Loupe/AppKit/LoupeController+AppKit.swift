@@ -417,22 +417,23 @@ public final class LoupeController {
         tracker = VelocityTracker()
         translation = .zero
         let zoomed = currentPage?.isZoomed == true
-        if abs(direction.x) > abs(direction.y) {
+        // Up or down closes; so does sideways past the first or last image. Other sideways moves page.
+        guard let axis = DismissDrag.axis(for: direction, index: index, count: count) else {
             guard phase == .presented, count > 1, !zoomed else { return gesture = .none }
             pagerSprings = nil
             gesture = .paging
-        } else {
-            switch phase {
-            case .presented where !zoomed: liftHero()
-            case .opening, .restoring: break
-            default: return gesture = .none
-            }
-            stopSprings()
-            phase = .dragging
-            drag = DismissDrag(start: heroState, anchor: point, containerHeight: area.height)
-            setAccessories(visible: false)
-            gesture = .dismissing
+            return
         }
+        switch phase {
+        case .presented where !zoomed: liftHero()
+        case .opening, .restoring: break
+        default: return gesture = .none
+        }
+        stopSprings()
+        phase = .dragging
+        drag = DismissDrag(start: heroState, anchor: point, axis: axis, container: area.size)
+        setAccessories(visible: false)
+        gesture = .dismissing
     }
 
     fileprivate func moveGesture(by delta: CGPoint, time: TimeInterval) {
@@ -465,8 +466,9 @@ public final class LoupeController {
             let target = Int(min(max(projected.rounded(), current - 1), current + 1))
             settlePager(at: target, velocity: -v.x)
         case .dismissing:
+            let closes = drag?.closes(translation: translation, velocity: v) == true
             drag = nil
-            if DismissDrag.closes(translation: translation, velocity: v, containerHeight: area.height) {
+            if closes {
                 close(velocity: v)
             } else {
                 restore(velocity: v)
