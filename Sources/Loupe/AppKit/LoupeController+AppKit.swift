@@ -1,0 +1,878 @@
+#if canImport(AppKit) && !targetEnvironment(macCatalyst)
+import AppKit
+
+/// Shows images over a window, opening out of the thumbnail that was clicked and closing back into it.
+///
+/// Swipe sideways with two fingers (or drag sideways) to move between images, pinch or
+/// double-click to zoom, and swipe or drag an image up or down to close it: it follows,
+/// shrinks, and lets the window show through; let go and it flies back into its thumbnail,
+/// or springs back. Esc and Space close, the arrow keys move between images.
+///
+/// ```swift
+/// let loupe = LoupeController(count: photos.count, index: clicked) { i in
+///     LoupeImage(url: photos[i].url, placeholder: thumbnails[i])
+/// } source: { i in
+///     LoupeSource(view: cells[i].imageView, cornerRadius: 8)
+/// }
+/// loupe.present(from: view)
+/// ```
+@MainActor
+public final class LoupeController {
+    public let context: LoupeContext
+    public var configuration: LoupeConfiguration
+    public var onIndexChange: ((Int) -> Void)?
+    public var onDismiss: (() -> Void)?
+    public var onDidDismiss: (() -> Void)?
+    /// Drawn over the images, over the whole window, faded during drags. Clicks that land on
+    /// nothing it draws go through to the images.
+    public var accessoryView: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if overlay != nil { installAccessoryView() }
+        }
+    }
+
+    public var index: Int { context.index }
+    public private(set) var isPresented = false
+    var isClosing: Bool { phase == .closing || phase == .closed }
+
+    private let count: Int
+    private let imageProvider: (Int) -> LoupeImage
+    private let sourceProvider: (Int) -> LoupeSource?
+
+    public init(
+        count: Int,
+        index: Int = 0,
+        configuration: LoupeConfiguration = .init(),
+        image: @escaping (Int) -> LoupeImage,
+        source: @escaping (Int) -> LoupeSource? = { _ in nil }
+    ) {
+        self.count = max(count, 0)
+        self.context = LoupeContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
+        self.configuration = configuration
+        self.imageProvider = image
+        self.sourceProvider = source
+        context.onDismiss = { [weak self] in self?.dismiss() }
+        context.onSelect = { [weak self] in self?.select($0, animated: true) }
+    }
+
+    // MARK: Presenting
+
+    /// Opens the viewer over the window `view` is in.
+    public func present(from view: NSView) {
+        // Above the content view, beside it: a SwiftUI hosting view does not draw views added
+        // into it, and this way the image can use the whole window, title bar included.
+        guard !isPresented, count > 0, let window = view.window, let content = window.contentView,
+              let frame = content.superview else { return }
+        isPresented = true
+        Self.retained[ObjectIdentifier(self)] = self
+        previousResponder = window.firstResponder
+
+        let overlay = OverlayView(controller: self)
+        overlay.frame = frame.bounds
+        overlay.autoresizingMask = [.width, .height]
+        frame.addSubview(overlay, positioned: .above, relativeTo: content)
+        self.overlay = overlay
+        build(in: overlay)
+        overlay.layoutSubtreeIfNeeded()
+        layout()
+        window.makeFirstResponder(overlay)
+        open()
+    }
+
+    public func dismiss() {
+        switch phase {
+        case .opening, .presented, .restoring: close(velocity: .zero)
+        case .dragging, .closing, .closed: break
+        }
+    }
+
+    public func select(_ index: Int, animated: Bool) {
+        guard overlay != nil, (0..<count).contains(index) else { return }
+        if animated, phase == .presented {
+            settlePager(at: index, velocity: 0)
+        } else {
+            pagerSprings = nil
+            pagerOffset = CGFloat(index) * pageStride
+            layoutPages()
+        }
+    }
+
+    // MARK: State
+
+    private enum Phase { case opening, presented, dragging, restoring, closing, closed }
+    private enum Gesture { case none, paging, dismissing }
+
+    private static var retained: [ObjectIdentifier: LoupeController] = [:]
+
+    private var phase: Phase = .closed
+    private weak var previousResponder: NSResponder?
+    private var overlay: OverlayView?
+    private let backdrop = FlippedView()
+    private let pager = FlippedView()
+    private let hero = HeroView()
+    private let accessoryContainer = AccessoryContainer()
+    private var pages: [Int: PageView] = [:]
+
+    private var images: [Int: LoupeImage] = [:]
+    private var loaded: [Int: NSImage] = [:]
+    private var fallbacks: [Int: NSImage] = [:]
+    private var loads: [Int: Task<Void, Never>] = [:]
+
+    private var heroState = HeroState.presented(.zero)
+    private var springs: SpringVector?
+    private var springDone: (() -> Void)?
+    private var pagerOffset: CGFloat = 0
+    private var pagerSprings: SpringVector?
+    private var ticker: FrameTicker?
+
+    private var gesture: Gesture = .none
+    private var drag: DismissDrag?
+    private var translation: CGPoint = .zero
+    private var tracker = VelocityTracker()
+    private var hiddenSource: LoupeSource?
+    private var closingSource: LoupeSource?
+
+    /// Where the images go: the window's content area, below the title bar (the backdrop covers it all).
+    private var area: CGRect {
+        guard let overlay, let window = overlay.window else { return .zero }
+        return overlay.convert(window.contentLayoutRect, from: nil).intersection(overlay.bounds)
+    }
+    private var pageStride: CGFloat { area.width + configuration.pageSpacing }
+
+    // MARK: Building
+
+    private func build(in overlay: OverlayView) {
+        ticker = FrameTicker(view: overlay) { [weak self] dt in self?.tick(dt) }
+        backdrop.wantsLayer = true
+        backdrop.layer?.backgroundColor = configuration.backgroundColor
+        backdrop.alphaValue = 0
+        pager.isHidden = true
+        hero.isHidden = true
+        accessoryContainer.alphaValue = 0
+        for view in [backdrop, pager, hero, accessoryContainer] as [NSView] {
+            view.frame = overlay.bounds
+            view.autoresizingMask = view === pager ? [] : [.width, .height]
+            overlay.addSubview(view)
+        }
+        installAccessoryView()
+
+        let doubleClick = NSClickGestureRecognizer(target: overlay, action: #selector(OverlayView.doubleClick(_:)))
+        doubleClick.numberOfClicksRequired = 2
+        doubleClick.delaysPrimaryMouseButtonEvents = false
+        let click = NSClickGestureRecognizer(target: overlay, action: #selector(OverlayView.click(_:)))
+        click.delaysPrimaryMouseButtonEvents = false
+        click.delegate = overlay
+        overlay.doubleClickRecognizer = doubleClick
+        let pan = NSPanGestureRecognizer(target: overlay, action: #selector(OverlayView.pan(_:)))
+        pan.delaysPrimaryMouseButtonEvents = false
+        [doubleClick, click, pan].forEach(overlay.addGestureRecognizer)
+    }
+
+    private func installAccessoryView() {
+        guard let accessoryView else { return }
+        accessoryView.frame = accessoryContainer.bounds
+        accessoryView.autoresizingMask = [.width, .height]
+        accessoryContainer.addSubview(accessoryView)
+        accessoryContainer.transparent = accessoryView
+    }
+
+    fileprivate func layout() {
+        guard overlay != nil else { return }
+        pager.frame = area
+        if pagerSprings == nil { pagerOffset = CGFloat(index) * pageStride }
+        for page in pages.values { page.refit() }
+        layoutPages()
+        switch phase {
+        case .opening, .restoring, .closing: retargetHero()
+        case .presented, .dragging, .closed: break
+        }
+    }
+
+    // MARK: Images
+
+    private func image(_ i: Int) -> LoupeImage {
+        if let image = images[i] { return image }
+        let image = imageProvider(i)
+        images[i] = image
+        return image
+    }
+
+    private func currentImage(_ i: Int) -> NSImage? {
+        if let image = loaded[i] { return image }
+        startLoading(i)
+        return loaded[i] ?? image(i).immediate ?? fallbacks[i]
+    }
+
+    private func startLoading(_ i: Int) {
+        guard loads[i] == nil, loaded[i] == nil else { return }
+        let source = image(i)
+        if let key = source.key, let cached = LoupeImageLoader.cached(key) {
+            loaded[i] = cached
+            return
+        }
+        guard let load = source.load else { return }
+        loads[i] = Task { [weak self] in
+            guard let image = try? await load() else { return }
+            self?.didLoad(image, at: i)
+        }
+    }
+
+    private func didLoad(_ image: NSImage, at i: Int) {
+        loaded[i] = image
+        pages[i]?.setImage(image, fade: true)
+        if i == index, !hero.isHidden {
+            hero.setImage(image, fade: true)
+            retargetHero()
+        }
+    }
+
+    // MARK: Pages
+
+    private func layoutPages() {
+        guard area.width > 0 else { return }
+        let position = pagerOffset / pageStride
+        let visible = Int(floor(position))...Int(ceil(position))
+        let wanted = Set((visible.lowerBound - 1...visible.upperBound + 1).filter { (0..<count).contains($0) })
+        for (i, page) in pages where !wanted.contains(i) {
+            page.removeFromSuperview()
+            pages[i] = nil
+        }
+        for i in wanted where pages[i] == nil {
+            let page = PageView(controller: self)
+            page.maximumZoomFactor = configuration.maximumZoomScale
+            pager.addSubview(page)
+            pages[i] = page
+            page.frame = pageFrame(i)
+            page.setImage(currentImage(i), fade: false)
+        }
+        for (i, page) in pages {
+            let frame = pageFrame(i)
+            if page.frame.size != frame.size {
+                page.frame = frame
+                page.refit()
+            } else {
+                page.setFrameOrigin(frame.origin)
+            }
+            if !visible.contains(i) { page.resetZoom() }
+        }
+        let i = Int(position.rounded())
+        if (0..<count).contains(i), i != index { setIndex(i) }
+    }
+
+    private func pageFrame(_ i: Int) -> CGRect {
+        CGRect(x: CGFloat(i) * pageStride - pagerOffset, y: 0, width: area.width, height: area.height)
+    }
+
+    private func setIndex(_ i: Int) {
+        guard i != context.index else { return }
+        context.index = i
+        if phase != .closed, phase != .closing { hideSource() }
+        onIndexChange?(i)
+    }
+
+    private var currentPage: PageView? { pages[index] }
+
+    /// Springs the pager to a page, carrying the swipe's velocity.
+    private func settlePager(at target: Int, velocity: CGFloat) {
+        let target = min(max(target, 0), count - 1)
+        var springs = pagerSprings ?? SpringVector(values: [Double(pagerOffset)], tolerances: [0.3], spring: LoupeSpring(response: 0.38, dampingRatio: 1))
+        springs.set(values: [Double(pagerOffset)], velocities: [Double(velocity)])
+        springs.retarget([Double(CGFloat(target) * pageStride)])
+        pagerSprings = springs
+        ticker?.start()
+    }
+
+    // MARK: Sources
+
+    private func hideSource() {
+        let source = sourceProvider(index)
+        if hiddenSource?.view !== source?.view { hiddenSource?.setHidden(false) }
+        source?.setHidden(true)
+        hiddenSource = source
+    }
+
+    private func visibleFrame(of source: LoupeSource?) -> CGRect? {
+        guard let source, let view = source.view, let overlay, view.window === overlay.window else { return nil }
+        let frame = view.convert(view.bounds, to: overlay)
+        guard frame.width > 1, frame.height > 1, frame.intersects(overlay.bounds) else { return nil }
+        return frame
+    }
+
+    private func snapshot(_ source: LoupeSource?) -> NSImage? {
+        guard let view = source?.view, let content = view.window?.contentView else { return nil }
+        let rect = view.convert(view.bounds, to: content)
+        guard rect.width > 1, rect.height > 1, let rep = content.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        content.cacheDisplay(in: rect, to: rep)
+        let image = NSImage(size: rect.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    private func sourceState(_ source: LoupeSource?) -> HeroState? {
+        guard let source, let frame = visibleFrame(of: source), let size = hero.image?.size else { return nil }
+        let mode = fallbacks[index] != nil && loaded[index] == nil ? LoupeContentMode.fit : source.contentMode
+        return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
+    }
+
+    // MARK: Opening and closing
+
+    private var fittedFrame: CGRect { area.placing(hero.image?.size ?? .zero, .fit) }
+
+    private func open() {
+        let source = sourceProvider(index)
+        if currentImage(index) == nil, let snap = snapshot(source) { fallbacks[index] = snap }
+        layoutPages()
+        hero.setImage(currentImage(index), fade: false)
+        hero.isHidden = false
+        phase = .opening
+        hideSource()
+        setHero((reduceMotion ? nil : sourceState(source)) ?? .vanished(from: fittedFrame))
+        setAccessories(visible: true)
+        animateHero(to: .presented(fittedFrame), spring: configuration.transitionSpring) { [weak self] in
+            self?.didSettlePresented()
+        }
+    }
+
+    private func didSettlePresented() {
+        phase = .presented
+        currentPage?.setImage(currentImage(index), fade: false)
+        pager.isHidden = false
+        hero.isHidden = true
+        setAccessories(visible: true)
+    }
+
+    private func liftHero() {
+        guard let overlay, let page = currentPage else { return }
+        let image = page.imageFrame(in: overlay)
+        hero.setImage(page.image, fade: false)
+        hero.isHidden = false
+        setHero(HeroState(image: image, clip: image.intersection(overlay.bounds), cornerRadius: 0, backdrop: 1))
+        pager.isHidden = true
+    }
+
+    private func close(velocity: CGPoint) {
+        if phase == .presented { liftHero() }
+        phase = .closing
+        setAccessories(visible: false)
+        onDismiss?()
+        let source = sourceProvider(index)
+        if hiddenSource?.view !== source?.view { hiddenSource?.setHidden(false) }
+        hiddenSource = source
+        source?.setHidden(true)
+        closingSource = source
+        animateHero(to: closedTarget(source), spring: configuration.transitionSpring, velocity: velocity) { [weak self] in
+            self?.didClose()
+        }
+    }
+
+    private func closedTarget(_ source: LoupeSource?) -> HeroState {
+        (reduceMotion ? nil : sourceState(source)) ?? .vanished(from: heroState.image)
+    }
+
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    private func didClose() {
+        phase = .closed
+        closingSource?.setHidden(false)
+        hiddenSource = nil
+        closingSource = nil
+        loads.values.forEach { $0.cancel() }
+        onDidDismiss?()
+        Task { @MainActor [self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            ticker?.stop()
+            let window = overlay?.window
+            overlay?.removeFromSuperview()
+            overlay = nil
+            if let previousResponder, window?.firstResponder == nil || window?.firstResponder === window {
+                window?.makeFirstResponder(previousResponder)
+            }
+            isPresented = false
+            Self.retained[ObjectIdentifier(self)] = nil
+        }
+    }
+
+    private func retargetHero() {
+        guard springs != nil else { return }
+        switch phase {
+        case .opening, .restoring: springs?.retarget(HeroState.presented(fittedFrame).vector)
+        case .closing: springs?.retarget(closedTarget(closingSource).vector)
+        case .presented, .dragging, .closed: break
+        }
+        ticker?.start()
+    }
+
+    private func restore(velocity: CGPoint) {
+        phase = .restoring
+        animateHero(to: .presented(fittedFrame), spring: configuration.restoreSpring, velocity: velocity) { [weak self] in
+            self?.didSettlePresented()
+        }
+    }
+
+    // MARK: Gestures
+
+    /// A drag or two-finger swipe starts: sideways moves between images, up or down closes.
+    fileprivate func beginGesture(at point: CGPoint, direction: CGPoint) {
+        tracker = VelocityTracker()
+        translation = .zero
+        let zoomed = currentPage?.isZoomed == true
+        if abs(direction.x) > abs(direction.y) {
+            guard phase == .presented, count > 1, !zoomed else { return gesture = .none }
+            pagerSprings = nil
+            gesture = .paging
+        } else {
+            switch phase {
+            case .presented where !zoomed: liftHero()
+            case .opening, .restoring: break
+            default: return gesture = .none
+            }
+            stopSprings()
+            phase = .dragging
+            drag = DismissDrag(start: heroState, anchor: point, containerHeight: area.height)
+            setAccessories(visible: false)
+            gesture = .dismissing
+        }
+    }
+
+    fileprivate func moveGesture(by delta: CGPoint, time: TimeInterval) {
+        tracker.add(delta, at: time)
+        switch gesture {
+        case .paging:
+            var offset = pagerOffset - delta.x
+            let limit = CGFloat(count - 1) * pageStride
+            if offset < 0 || offset > limit {
+                // Past the first or last image: resist.
+                offset = pagerOffset - delta.x * 0.35
+            }
+            pagerOffset = offset
+            layoutPages()
+        case .dismissing:
+            translation.x += delta.x
+            translation.y += delta.y
+            if let drag { setHero(drag.state(translation: translation)) }
+        case .none:
+            break
+        }
+    }
+
+    fileprivate func endGesture() {
+        let v = tracker.velocity
+        switch gesture {
+        case .paging:
+            let projected = (pagerOffset - v.x * 0.15) / pageStride
+            let current = CGFloat(index)
+            let target = Int(min(max(projected.rounded(), current - 1), current + 1))
+            settlePager(at: target, velocity: -v.x)
+        case .dismissing:
+            drag = nil
+            if DismissDrag.closes(translation: translation, velocity: v, containerHeight: area.height) {
+                close(velocity: v)
+            } else {
+                restore(velocity: v)
+            }
+        case .none:
+            break
+        }
+        gesture = .none
+    }
+
+    fileprivate func handleClick(at point: CGPoint) {
+        guard phase == .presented, let overlay else { return }
+        let onImage = currentPage?.imageFrame(in: overlay).contains(point) == true
+        if !onImage { dismiss() } else if configuration.tapTogglesAccessories {
+            context.accessoriesVisible.toggle()
+            setAccessories(visible: true)
+        }
+    }
+
+    fileprivate func handleDoubleClick(at point: CGPoint) {
+        guard phase == .presented, let overlay, let page = currentPage else { return }
+        page.toggleZoom(at: overlay.convert(point, to: page))
+    }
+
+    fileprivate func handleKey(_ event: NSEvent) -> Bool {
+        switch event.keyCode {
+        case 53, 49: dismiss()
+        case 123: select(index - 1, animated: true)
+        case 124: select(index + 1, animated: true)
+        default: return false
+        }
+        return true
+    }
+
+    // MARK: Accessories
+
+    private func setAccessories(visible: Bool) {
+        let alpha: CGFloat = visible && context.accessoriesVisible ? 1 : 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = alpha > 0 ? 0.25 : 0.15
+            accessoryContainer.animator().alphaValue = alpha
+        }
+    }
+
+    // MARK: Animation
+
+    private func setHero(_ state: HeroState) {
+        heroState = state
+        hero.apply(state)
+        backdrop.alphaValue = state.backdrop
+        springs?.set(values: state.vector)
+    }
+
+    private func animateHero(to target: HeroState, spring: LoupeSpring, velocity: CGPoint = .zero, completion: @escaping () -> Void) {
+        var springs = springs ?? SpringVector(values: heroState.vector, tolerances: HeroState.tolerances, spring: spring)
+        if self.springs == nil || velocity != .zero {
+            springs.set(values: heroState.vector, velocities: velocity == .zero ? nil : heroState.velocity(velocity, toward: target))
+        }
+        springs.retarget(target.vector, spring: spring)
+        self.springs = springs
+        springDone = completion
+        ticker?.start()
+    }
+
+    private func stopSprings() {
+        springs = nil
+        springDone = nil
+    }
+
+    private func tick(_ dt: Double) {
+        if var pagerSprings {
+            let done = pagerSprings.step(dt)
+            self.pagerSprings = done ? nil : pagerSprings
+            pagerOffset = CGFloat(pagerSprings.values[0])
+            layoutPages()
+        }
+        if var springs {
+            let done = springs.step(dt)
+            self.springs = springs
+            heroState = HeroState(springs.values)
+            hero.apply(heroState)
+            backdrop.alphaValue = heroState.backdrop
+            if done {
+                let completion = springDone
+                stopSprings()
+                completion?()
+            }
+        }
+        if springs == nil, pagerSprings == nil { ticker?.stop() }
+    }
+
+    // MARK: Views
+
+    /// Covers the window; takes the clicks, drags, swipes and keys meant for the viewer.
+    fileprivate final class OverlayView: NSView, NSGestureRecognizerDelegate {
+        weak var controller: LoupeController?
+        weak var doubleClickRecognizer: NSGestureRecognizer?
+        private var scrollBegan = false
+
+        init(controller: LoupeController) {
+            self.controller = controller
+            super.init(frame: .zero)
+            wantsLayer = true
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override var isFlipped: Bool { true }
+        override var acceptsFirstResponder: Bool { true }
+
+        override func layout() {
+            super.layout()
+            controller?.layout()
+        }
+
+        override func keyDown(with event: NSEvent) {
+            if controller?.handleKey(event) != true { super.keyDown(with: event) }
+        }
+
+        override func cancelOperation(_ sender: Any?) { controller?.dismiss() }
+
+        // A click waits to see whether it is the first of a double click.
+        func gestureRecognizer(_ g: NSGestureRecognizer, shouldRequireFailureOf other: NSGestureRecognizer) -> Bool {
+            other === doubleClickRecognizer
+        }
+
+        // Clicks must not reach the window underneath.
+        override func mouseDown(with event: NSEvent) {}
+        override func rightMouseDown(with event: NSEvent) {}
+
+        @objc func click(_ g: NSClickGestureRecognizer) {
+            guard !accessoryHit(g) else { return }
+            controller?.handleClick(at: g.location(in: self))
+        }
+
+        @objc func doubleClick(_ g: NSClickGestureRecognizer) {
+            guard !accessoryHit(g) else { return }
+            controller?.handleDoubleClick(at: g.location(in: self))
+        }
+
+        @objc func pan(_ g: NSPanGestureRecognizer) {
+            guard let controller else { return }
+            switch g.state {
+            case .began:
+                guard !accessoryHit(g) else { return }
+                let t = g.translation(in: self)
+                controller.beginGesture(at: g.location(in: self), direction: t)
+                controller.moveGesture(by: t, time: ProcessInfo.processInfo.systemUptime)
+                g.setTranslation(.zero, in: self)
+            case .changed:
+                controller.moveGesture(by: g.translation(in: self), time: ProcessInfo.processInfo.systemUptime)
+                g.setTranslation(.zero, in: self)
+            case .ended, .cancelled:
+                controller.endGesture()
+            default:
+                break
+            }
+        }
+
+        private func accessoryHit(_ g: NSGestureRecognizer) -> Bool {
+            guard let controller, let superview else { return false }
+            let hit = hitTest(convert(g.location(in: self), to: superview))
+            return hit?.isDescendant(of: controller.accessoryContainer) == true
+        }
+
+        /// Two-finger swipes: sideways moves between images, up or down closes. The momentum
+        /// that follows a swipe is ignored; the springs carry the swipe's velocity instead.
+        func scrollGesture(_ event: NSEvent) -> Bool {
+            guard let controller, event.hasPreciseScrollingDeltas, event.momentumPhase == [] else {
+                return event.momentumPhase != []
+            }
+            let delta = CGPoint(x: event.scrollingDeltaX, y: event.scrollingDeltaY)
+            if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+                scrollBegan = false
+                return true
+            }
+            if event.phase.contains(.changed) {
+                if !scrollBegan {
+                    guard delta != .zero else { return true }
+                    scrollBegan = true
+                    controller.beginGesture(at: convert(event.locationInWindow, from: nil), direction: delta)
+                }
+                controller.moveGesture(by: delta, time: event.timestamp)
+                return true
+            }
+            if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                if scrollBegan { controller.endGesture() }
+                scrollBegan = false
+                return true
+            }
+            return false
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            if !scrollGesture(event) { super.scrollWheel(with: event) }
+        }
+    }
+
+    /// One image: fitted to the window, pinch or double-click to zoom.
+    fileprivate final class PageView: NSScrollView {
+        weak var controller: LoupeController?
+        let imageView = LayerImageView()
+        var maximumZoomFactor: CGFloat = 4
+        private var imageSize: CGSize = .zero
+
+        init(controller: LoupeController) {
+            self.controller = controller
+            super.init(frame: .zero)
+            contentView = CenteringClipView()
+            drawsBackground = false
+            hasVerticalScroller = false
+            hasHorizontalScroller = false
+            allowsMagnification = true
+            scrollerStyle = .overlay
+            documentView = imageView
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        var image: NSImage? { imageView.image }
+        var isZoomed: Bool { magnification > minMagnification + 0.01 }
+
+        func setImage(_ image: NSImage?, fade: Bool) {
+            imageView.setImage(image, fade: fade)
+            let size = image?.size ?? .zero
+            let sameShape = size.hasArea && imageSize.hasArea
+                && abs(size.width / size.height - imageSize.width / imageSize.height) < 0.002
+            imageSize = size
+            if !sameShape { refit() }
+        }
+
+        func refit() {
+            magnification = 1
+            let fitted = CGRect(origin: .zero, size: bounds.size).placing(imageSize, .fit)
+            imageView.frame = CGRect(origin: .zero, size: fitted.size)
+            minMagnification = 1
+            let fill = fitted.width > 0 ? max(bounds.width / fitted.width, bounds.height / fitted.height) : 1
+            maxMagnification = max(maximumZoomFactor, fill)
+        }
+
+        func resetZoom() {
+            if isZoomed { magnification = minMagnification }
+        }
+
+        func imageFrame(in view: NSView) -> CGRect {
+            imageView.convert(imageView.bounds, to: view)
+        }
+
+        func toggleZoom(at point: CGPoint) {
+            let target: CGFloat
+            if isZoomed {
+                target = minMagnification
+            } else {
+                let fitted = imageView.frame.size
+                let fill = fitted.width > 0 ? max(bounds.width / fitted.width, bounds.height / fitted.height) : 2.5
+                target = min(fill > 1.25 ? fill : 2.5, maxMagnification)
+            }
+            let center = convert(point, to: imageView)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.3
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+                context.allowsImplicitAnimation = true
+                setMagnification(target, centeredAt: center)
+            }
+        }
+
+        override func scrollWheel(with event: NSEvent) {
+            if !isZoomed, let overlay = controller?.overlay, overlay.scrollGesture(event) { return }
+            super.scrollWheel(with: event)
+        }
+    }
+
+    /// Keeps an image smaller than the window in its middle.
+    private final class CenteringClipView: NSClipView {
+        override var isFlipped: Bool { true }
+
+        override func constrainBoundsRect(_ proposed: NSRect) -> NSRect {
+            var rect = super.constrainBoundsRect(proposed)
+            guard let document = documentView else { return rect }
+            if rect.width > document.frame.width { rect.origin.x = (document.frame.width - rect.width) / 2 }
+            if rect.height > document.frame.height { rect.origin.y = (document.frame.height - rect.height) / 2 }
+            return rect
+        }
+    }
+
+    /// The moving image: a clipping frame with rounded corners, the whole image inside it.
+    private final class HeroView: FlippedView {
+        let clipView = FlippedView()
+        let imageView = LayerImageView()
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            clipView.wantsLayer = true
+            clipView.layer?.masksToBounds = true
+            clipView.layer?.cornerCurve = .continuous
+            clipView.addSubview(imageView)
+            addSubview(clipView)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        var image: NSImage? { imageView.image }
+
+        func setImage(_ image: NSImage?, fade: Bool) { imageView.setImage(image, fade: fade) }
+
+        func apply(_ state: HeroState) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            clipView.frame = state.clip
+            clipView.layer?.cornerRadius = min(state.cornerRadius, min(state.clip.width, state.clip.height) / 2)
+            imageView.frame = state.image.offsetBy(dx: -state.clip.minX, dy: -state.clip.minY)
+            clipView.alphaValue = state.opacity
+            CATransaction.commit()
+        }
+    }
+
+    /// Lets clicks through wherever the accessories draw nothing.
+    private final class AccessoryContainer: FlippedView {
+        weak var transparent: NSView?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard alphaValue > 0.01 else { return nil }
+            let hit = super.hitTest(point)
+            if hit === self { return nil }
+            if let transparent, hit === transparent,
+               !transparent.drawsSomething(near: transparent.convert(point, from: superview)) { return nil }
+            return hit
+        }
+    }
+}
+
+/// An image drawn by its layer, stretched to the view's bounds.
+final class LayerImageView: NSView {
+    private(set) var image: NSImage?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+        layerContentsRedrawPolicy = .never
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+
+    func setImage(_ image: NSImage?, fade: Bool) {
+        self.image = image
+        if fade {
+            let transition = CATransition()
+            transition.type = .fade
+            transition.duration = 0.2
+            layer?.add(transition, forKey: "loupe.fade")
+        }
+        layer?.contents = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+}
+
+class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+extension NSView {
+    /// Whether anything visible is drawn within a fingertip of `point` (in this view's coordinates).
+    func drawsSomething(near point: CGPoint, radius: CGFloat = 8) -> Bool {
+        guard let layer else { return true }
+        let side = Int(radius * 2)
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            if isFlipped {
+                context.translateBy(x: 0, y: CGFloat(side))
+                context.scaleBy(x: 1, y: -1)
+            }
+            context.translateBy(x: radius - point.x, y: radius - point.y)
+            layer.render(in: context)
+            return true
+        }
+        guard drawn else { return true }
+        return stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 8 }
+    }
+}
+
+/// The velocity of a drag, from its last few movements.
+struct VelocityTracker {
+    private var samples: [(delta: CGPoint, time: TimeInterval)] = []
+
+    mutating func add(_ delta: CGPoint, at time: TimeInterval) {
+        samples.append((delta, time))
+        samples.removeAll { time - $0.time > 0.1 }
+    }
+
+    var velocity: CGPoint {
+        guard let first = samples.first, let last = samples.last, last.time - first.time > 0.005 else { return .zero }
+        let total = samples.dropFirst().reduce(CGPoint.zero) { CGPoint(x: $0.x + $1.delta.x, y: $0.y + $1.delta.y) }
+        let dt = last.time - first.time
+        return CGPoint(x: total.x / dt, y: total.y / dt)
+    }
+}
+#endif

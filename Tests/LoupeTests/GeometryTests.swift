@@ -1,0 +1,50 @@
+import CoreGraphics
+import Testing
+@testable import Loupe
+
+@Test func fillCropsAndFitLetterboxes() {
+    let frame = CGRect(x: 10, y: 20, width: 100, height: 100)
+    let wide = CGSize(width: 400, height: 200)
+    #expect(frame.placing(wide, .fill) == CGRect(x: -40, y: 20, width: 200, height: 100))
+    #expect(frame.placing(wide, .fit) == CGRect(x: 10, y: 45, width: 100, height: 50))
+}
+
+@Test func theGrabbedPointStaysUnderTheFinger() {
+    let start = HeroState.presented(CGRect(x: 0, y: 100, width: 400, height: 600))
+    let anchor = CGPoint(x: 120, y: 300)
+    let drag = DismissDrag(start: start, anchor: anchor, containerHeight: 800)
+    let t = CGPoint(x: 30, y: 200)
+    let state = drag.state(translation: t)
+    // The grabbed point is at the same fraction of the image before and after.
+    let fx = (anchor.x - start.image.minX) / start.image.width
+    let fy = (anchor.y - start.image.minY) / start.image.height
+    #expect(abs(state.image.minX + fx * state.image.width - (anchor.x + t.x)) < 0.001)
+    #expect(abs(state.image.minY + fy * state.image.height - (anchor.y + t.y)) < 0.001)
+    #expect(state.image.width < start.image.width)
+    #expect(state.backdrop < 1)
+}
+
+@Test func aFlickClosesAndAPullBackStays() {
+    func closes(_ ty: CGFloat, _ vy: CGFloat) -> Bool {
+        DismissDrag.closes(translation: CGPoint(x: 0, y: ty), velocity: CGPoint(x: 0, y: vy), containerHeight: 800)
+    }
+    #expect(closes(30, 1200))
+    #expect(closes(-30, -1200))
+    #expect(closes(-200, 0))
+    #expect(!closes(100, 0))
+    #expect(!closes(200, -900))
+}
+
+@Test func aSpringArrivesAndKeepsItsVelocityWhenRetargeted() {
+    var spring = SpringVector(values: [0], tolerances: [0.01], spring: .transition)
+    spring.retarget([100])
+    for _ in 0..<6 { _ = spring.step(1.0 / 60) }
+    let midway = spring.velocities[0]
+    #expect(midway > 0)
+    spring.retarget([50])
+    #expect(spring.velocities[0] == midway)
+    var settled = false
+    for _ in 0..<120 where !settled { settled = spring.step(1.0 / 60) }
+    #expect(settled)
+    #expect(spring.values == [50])
+}
