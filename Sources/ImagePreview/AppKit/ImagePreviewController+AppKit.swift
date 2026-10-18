@@ -133,6 +133,8 @@ public final class ImagePreviewController {
     private var hiddenSource: PreviewSource?
     private var closingSource: PreviewSource?
     private var landing: Landing?
+    /// Frames left in the hand-over from the landed image to its thumbnail.
+    private var handoff: Int?
 
     /// Where the images go: the window's content area, below the title bar (the backdrop covers it all).
     private var area: CGRect {
@@ -315,8 +317,8 @@ public final class ImagePreviewController {
         return image
     }
 
-    private func sourceState(_ source: PreviewSource?) -> HeroState? {
-        guard let source, let frame = visibleFrame(of: source), let size = hero.image?.size else { return nil }
+    private func sourceState(_ source: PreviewSource?, at frame: CGRect? = nil) -> HeroState? {
+        guard let source, let frame = frame ?? visibleFrame(of: source), let size = hero.image?.size else { return nil }
         let mode = fallbacks[index] != nil && loaded[index] == nil ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
     }
@@ -387,22 +389,38 @@ public final class ImagePreviewController {
         phase = .closed
         closingSource?.setHidden(false)
         hiddenSource = nil
-        closingSource = nil
         landing = nil
         loads.values.forEach { $0.cancel() }
         onDidDismiss?()
-        Task { @MainActor [self] in
-            try? await Task.sleep(for: .milliseconds(50))
-            ticker?.stop()
-            let window = overlay?.window
-            overlay?.removeFromSuperview()
-            overlay = nil
-            if let previousResponder, window?.firstResponder == nil || window?.firstResponder === window {
-                window?.makeFirstResponder(previousResponder)
-            }
-            isPresented = false
-            Self.retained[ObjectIdentifier(self)] = nil
+        handOverOrFinish()
+    }
+
+    /// The thumbnail shows again a frame or two after it is told to (SwiftUI may take one more).
+    /// Until it surely has, the landed image stays pinned on it, following it if the page is
+    /// scrolling, so the two never part; then the image goes.
+    private func handOverOrFinish() {
+        guard heroState.opacity > 0, closingSource != nil else { return finish() }
+        handoff = 4
+        ticker?.start()
+    }
+
+    private func handOver(_ frames: Int) {
+        if let frame = frame(of: closingSource), let state = sourceState(closingSource, at: frame) { setHero(state) }
+        if frames > 1 { handoff = frames - 1 } else { finish() }
+    }
+
+    private func finish() {
+        handoff = nil
+        closingSource = nil
+        ticker?.stop()
+        let window = overlay?.window
+        overlay?.removeFromSuperview()
+        overlay = nil
+        if let previousResponder, window?.firstResponder == nil || window?.firstResponder === window {
+            window?.makeFirstResponder(previousResponder)
         }
+        isPresented = false
+        Self.retained[ObjectIdentifier(self)] = nil
     }
 
     private func retargetHero() {
@@ -551,6 +569,7 @@ public final class ImagePreviewController {
     }
 
     private func tick(_ dt: Double) {
+        if let handoff { return handOver(handoff) }
         if var pagerSprings {
             let done = pagerSprings.step(dt)
             self.pagerSprings = done ? nil : pagerSprings
@@ -575,7 +594,7 @@ public final class ImagePreviewController {
                 completion?()
             }
         }
-        if springs == nil, pagerSprings == nil { ticker?.stop() }
+        if springs == nil, pagerSprings == nil, handoff == nil { ticker?.stop() }
     }
 
     // MARK: Views

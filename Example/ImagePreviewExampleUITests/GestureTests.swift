@@ -72,4 +72,25 @@ final class GestureTests: XCTestCase {
         at(0.5, 0.5).press(forDuration: 0.02, thenDragTo: at(0.5, 0.62), withVelocity: 600, thenHoldForDuration: 0.1)
         sleep(3)
     }
+
+    /// Closes an image and scrolls the page slowly through the moment it lands: the image must
+    /// hand over to its thumbnail without the two parting for a frame.
+    @MainActor
+    func testLandingWhileThePageScrolls() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["PREVIEW_TRANSITION_RESPONSE"] = "0.7"
+        app.launch()
+        let image = app.images.element(boundBy: 2)
+        XCTAssertTrue(image.waitForExistence(timeout: 15))
+        let screen = app.windows.firstMatch
+        func at(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+
+        image.tap()
+        sleep(2)
+        app.buttons["Close"].tap()
+        at(0.5, 0.85).press(forDuration: 0.02, thenDragTo: at(0.5, 0.45), withVelocity: 180, thenHoldForDuration: 0.2)
+        sleep(2)
+    }
 }

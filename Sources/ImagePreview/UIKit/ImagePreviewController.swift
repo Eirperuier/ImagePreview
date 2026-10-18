@@ -140,6 +140,12 @@ public final class ImagePreviewController {
     private var hiddenSource: PreviewSource?
     private var closingSource: PreviewSource?
     private var landing: Landing?
+    /// Frames left in the hand-over from the landed image to its thumbnail.
+    private var handoff: Int?
+    /// Once the image is home: the scroll views to wait for before the window goes, and since when.
+    private var retiring: ([UIScrollView], CFTimeInterval)?
+    /// The status bar is drawn as the app draws it, not light over the dark backdrop.
+    private var statusBarFollowsApp = false
 
     private lazy var gestureTarget = GestureTarget(self)
     private lazy var dismissPan = UIPanGestureRecognizer(target: gestureTarget, action: #selector(GestureTarget.pan(_:)))
@@ -398,7 +404,11 @@ public final class ImagePreviewController {
     private func close(velocity: CGPoint) {
         if phase == .presented { liftHero() }
         phase = .closing
+        // From here the app has the touches and the keyboard again: the page can be scrolled while
+        // the image flies home. Handing the key window back now, not when the viewer's window goes,
+        // keeps that change from landing in the middle of a scroll and resetting it.
         window?.isUserInteractionEnabled = false
+        if previousKeyWindow?.windowScene != nil { previousKeyWindow?.makeKey() }
         setAccessories(visible: false)
         onDismiss?()
 
@@ -423,8 +433,8 @@ public final class ImagePreviewController {
     }
 
     /// The image laid over its thumbnail as the thumbnail draws it, if the thumbnail is on screen.
-    private func sourceState(_ source: PreviewSource?) -> HeroState? {
-        guard let source, let frame = visibleFrame(of: source), let size = hero.imageView.image?.size else { return nil }
+    private func sourceState(_ source: PreviewSource?, at frame: CGRect? = nil) -> HeroState? {
+        guard let source, let frame = frame ?? visibleFrame(of: source), let size = hero.imageView.image?.size else { return nil }
         // A picture of the thumbnail already has its shape: it is drawn whole.
         let mode = fallbacks[index] != nil && loaded[index] == nil ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
@@ -434,20 +444,39 @@ public final class ImagePreviewController {
         phase = .closed
         closingSource?.setHidden(false)
         hiddenSource = nil
-        closingSource = nil
         landing = nil
         loads.values.forEach { $0.cancel() }
         onDidDismiss?()
-        // The thumbnail shows again on the next frame (SwiftUI may take one more); the image
-        // lies exactly on it until then, so nothing flickers.
-        Task { @MainActor [self] in
-            try? await Task.sleep(for: .milliseconds(50))
-            if previousKeyWindow?.windowScene != nil { previousKeyWindow?.makeKey() }
-            window?.isHidden = true
-            window = nil
-            isPresented = false
-            Self.retained[ObjectIdentifier(self)] = nil
-        }
+        handOverOrFinish()
+    }
+
+    /// The image is home. The viewer's window stays, empty and letting every touch through,
+    /// until the page the thumbnail is on has stopped scrolling: hiding a window over a scroll in
+    /// progress makes the system lay the app's window out again, and a navigation bar with a
+    /// large title then knocks the scroll off course (a visible jump under the finger).
+    private func finish() {
+        handoff = nil
+        hero.isHidden = true
+        backdrop.alpha = 0
+        retiring = (scrollViews(around: closingSource?.view), CACurrentMediaTime())
+        closingSource = nil
+        ticker.start()
+    }
+
+    private func retire() {
+        guard let (scrollViews, since) = retiring else { return }
+        let atRest = scrollViews.allSatisfy { $0.window == nil || (!$0.isTracking && !$0.isDragging && !$0.isDecelerating) }
+        guard atRest || CACurrentMediaTime() - since > 5 else { return }
+        retiring = nil
+        ticker.stop()
+        window?.isHidden = true
+        window = nil
+        isPresented = false
+        Self.retained[ObjectIdentifier(self)] = nil
+    }
+
+    private func scrollViews(around view: UIView?) -> [UIScrollView] {
+        sequence(first: view?.superview) { $0?.superview }.compactMap { $0 as? UIScrollView }
     }
 
     /// The target of the running animation, worked out again (the image or the screen changed size).
@@ -539,7 +568,36 @@ public final class ImagePreviewController {
         }
     }
 
-    fileprivate var hidesHomeIndicator: Bool { !context.accessoriesVisible }
+    fileprivate var hidesHomeIndicator: Bool { !statusBarFollowsApp && !context.accessoriesVisible }
+
+    #if !os(visionOS)
+    /// Light over the backdrop; while closing, whatever the app underneath asks for.
+    fileprivate var statusBarStyle: UIStatusBarStyle {
+        guard statusBarFollowsApp, let app = appStatusBarController(\.childForStatusBarStyle) else { return .lightContent }
+        return app.preferredStatusBarStyle
+    }
+
+    fileprivate var statusBarHidden: Bool {
+        guard statusBarFollowsApp, let app = appStatusBarController(\.childForStatusBarHidden) else { return false }
+        return app.prefersStatusBarHidden
+    }
+
+    /// The view controller of the app's window that decides its status bar, the way UIKit finds it.
+    private func appStatusBarController(_ child: KeyPath<UIViewController, UIViewController?>) -> UIViewController? {
+        var controller = previousKeyWindow?.rootViewController
+        while let current = controller {
+            if let presented = current.presentedViewController, !presented.isBeingDismissed,
+               presented.modalPresentationCapturesStatusBarAppearance || presented.modalPresentationStyle == .fullScreen {
+                controller = presented
+            } else if let next = current[keyPath: child] {
+                controller = next
+            } else {
+                return current
+            }
+        }
+        return nil
+    }
+    #endif
 
     // MARK: Hero animation
 
@@ -568,6 +626,8 @@ public final class ImagePreviewController {
     }
 
     private func tick(_ dt: Double) {
+        if retiring != nil { return retire() }
+        if let handoff { return handOver(handoff) }
         guard var springs else { return ticker.stop() }
         if phase == .closing, var landing, let frame = frame(of: closingSource) {
             if !landing.follow(frame, springs: &springs), let target = sourceState(closingSource) {
@@ -580,11 +640,34 @@ public final class ImagePreviewController {
         heroState = HeroState(springs.values)
         hero.apply(heroState)
         backdrop.alpha = heroState.backdrop
+        // Closing: the status bar turns back to the app's as the page shows through.
+        if phase == .closing, !statusBarFollowsApp, heroState.backdrop < 0.5 {
+            statusBarFollowsApp = true
+            #if !os(visionOS)
+            UIView.animate(withDuration: 0.2) { self.root?.setNeedsStatusBarAppearanceUpdate() }
+            #endif
+        }
         if done {
             let completion = springDone
             stopSprings()
             completion?()
         }
+    }
+
+    // MARK: Hand-over
+
+    /// The thumbnail shows again a frame or two after it is told to (SwiftUI may take one more).
+    /// Until it surely has, the landed image stays pinned on it, following it if the page is
+    /// scrolling, so the two never part; then the image goes.
+    private func handOverOrFinish() {
+        guard heroState.opacity > 0, closingSource != nil else { return finish() }
+        handoff = 4
+        ticker.start()
+    }
+
+    private func handOver(_ frames: Int) {
+        if let frame = frame(of: closingSource), let state = sourceState(closingSource, at: frame) { setHero(state) }
+        if frames > 1 { handoff = frames - 1 } else { finish() }
     }
 
     // MARK: Keyboard
@@ -658,7 +741,9 @@ private final class PreviewRootViewController: UIViewController {
     }
 
     #if !os(visionOS)
-    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+    override var preferredStatusBarStyle: UIStatusBarStyle { controller.statusBarStyle }
+    override var prefersStatusBarHidden: Bool { controller.statusBarHidden }
+    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
     override var prefersHomeIndicatorAutoHidden: Bool { controller.hidesHomeIndicator }
     #endif
 
