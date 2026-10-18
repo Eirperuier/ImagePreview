@@ -5,7 +5,18 @@ extension ImagePreviewController {
     /// Makes the viewer's page a SwiftUI view built around the images, so its `.toolbar` and
     /// `.navigationTitle` go on the viewer's navigation bar and toolbar. Call before presenting.
     public func setPage<Content: View>(@ViewBuilder _ content: @escaping (ImagePreviewPage) -> Content) {
-        let host = PreviewHostingController(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: stage), content: content))
+        setPage(actions: { _ in EmptyView() }, content)
+    }
+
+    /// Makes the viewer's page a SwiftUI view built around the images, with `actions` (buttons for the
+    /// image on screen) beside the close button. Call before presenting.
+    public func setPage<Actions: View, Content: View>(
+        @ViewBuilder actions: @escaping (ImagePreviewContext) -> Actions,
+        @ViewBuilder _ content: @escaping (ImagePreviewPage) -> Content
+    ) {
+        let context = context
+        let page = ImagePreviewPage(context: context, stage: stage, actions: Actions.self == EmptyView.self ? nil : { AnyView(actions(context)) })
+        let host = PreviewHostingController(rootView: PreviewPageHost(page: page, content: content))
         host.view.backgroundColor = .clear
         pageController = host
     }
@@ -21,11 +32,13 @@ private final class PreviewHostingController<Content: View>: UIHostingController
 
 /// The images, as a SwiftUI view: give it a `.toolbar`, a `.navigationTitle`, or overlays.
 ///
-/// It has a close button on the navigation bar; the bars hide and show with a tap and fade while an image is dragged.
+/// It has a close button on the navigation bar, and the actions opposite it; the bars hide and show
+/// with a tap and fade while an image is dragged.
 public struct ImagePreviewPage: View {
     /// What the page can read (the index, the count) and do.
     public let context: ImagePreviewContext
     let stage: UIViewController
+    let actions: (() -> AnyView)?
 
     public var body: some View {
         PreviewStage(stage: stage)
@@ -33,6 +46,9 @@ public struct ImagePreviewPage: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     ImagePreviewCloseButton(context: context)
+                }
+                if let actions {
+                    ToolbarItemGroup(placement: .primaryAction) { actions() }
                 }
             }
     }

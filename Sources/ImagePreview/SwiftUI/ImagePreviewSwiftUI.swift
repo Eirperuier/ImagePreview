@@ -31,6 +31,31 @@ extension View {
         }
     }
 
+    /// Shows `items` full screen while `selection` is set, with `actions` for the image on screen
+    /// (share, delete) beside the close button.
+    ///
+    /// They go where the platform puts a page's buttons: on iOS on the navigation bar, opposite the close
+    /// button; on the Mac on the window's toolbar if it has one, at the end of its title bar if not.
+    ///
+    /// ```swift
+    /// .imagePreview(selection: $opened, items: photos) { photo in
+    ///     PreviewImage(url: photo.url, placeholder: photo.thumbnail)
+    /// } actions: { photo in
+    ///     ShareLink(item: photo.url)
+    /// }
+    /// ```
+    public func imagePreview<Item: Identifiable, Actions: View>(
+        selection: Binding<Item.ID?>,
+        items: [Item],
+        configuration: ImagePreviewConfiguration = .init(),
+        image: @escaping (Item) -> PreviewImage,
+        @ViewBuilder actions: @escaping (Item) -> Actions
+    ) -> some View {
+        imagePreview(selection: selection, items: items, configuration: configuration, image: image, actions: actions) { page in
+            ImagePreviewDefaultPage(page: page)
+        }
+    }
+
     /// Shows `items` full screen while `selection` is set, on a page you dress yourself.
     ///
     /// On iOS the page is a real page in a navigation controller: give it a `.toolbar` and a
@@ -52,7 +77,20 @@ extension View {
         image: @escaping (Item) -> PreviewImage,
         @ViewBuilder page: @escaping (ImagePreviewPage) -> Page
     ) -> some View {
-        modifier(ImagePreviewModifier(selection: selection, items: items, configuration: configuration, image: image, page: page))
+        imagePreview(selection: selection, items: items, configuration: configuration, image: image, actions: { _ in EmptyView() }, page: page)
+    }
+
+    /// Shows `items` full screen while `selection` is set, with `actions` for the image on screen, on a
+    /// page you dress yourself.
+    public func imagePreview<Item: Identifiable, Actions: View, Page: View>(
+        selection: Binding<Item.ID?>,
+        items: [Item],
+        configuration: ImagePreviewConfiguration = .init(),
+        image: @escaping (Item) -> PreviewImage,
+        @ViewBuilder actions: @escaping (Item) -> Actions,
+        @ViewBuilder page: @escaping (ImagePreviewPage) -> Page
+    ) -> some View {
+        modifier(ImagePreviewModifier(selection: selection, items: items, configuration: configuration, image: image, actions: actions, page: page))
     }
 
     /// Marks this view as the thumbnail of the item with `id`: the viewer opens out of it and
@@ -189,12 +227,13 @@ final class PreviewPresenter {
     private var controller: ImagePreviewController?
     private var shownID: AnyHashable?
 
-    func update<Item: Identifiable, Page: View>(
+    func update<Item: Identifiable, Actions: View, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration,
         registry: PreviewRegistry,
         image: @escaping (Item) -> PreviewImage,
+        actions: @escaping (Item) -> Actions,
         page: @escaping (ImagePreviewPage) -> Page
     ) {
         let selected = selection.wrappedValue
@@ -226,18 +265,19 @@ final class PreviewPresenter {
             self.shownID = nil
             if selection.wrappedValue != nil { selection.wrappedValue = nil }
         }
-        controller.setPage(page)
+        controller.setPage(actions: { context in actions(items[context.index]) }, page)
         self.controller = controller
         shownID = AnyHashable(selected)
         controller.present(from: host)
     }
 }
 
-struct ImagePreviewModifier<Item: Identifiable, Page: View>: ViewModifier {
+struct ImagePreviewModifier<Item: Identifiable, Actions: View, Page: View>: ViewModifier {
     let selection: Binding<Item.ID?>
     let items: [Item]
     let configuration: ImagePreviewConfiguration
     let image: (Item) -> PreviewImage
+    let actions: (Item) -> Actions
     let page: (ImagePreviewPage) -> Page
     @State private var registry = PreviewRegistry()
     @State private var presenter = PreviewPresenter()
@@ -249,7 +289,7 @@ struct ImagePreviewModifier<Item: Identifiable, Page: View>: ViewModifier {
             .onChange(of: selection.wrappedValue, initial: true) {
                 presenter.update(
                     selection: selection, items: items, configuration: configuration,
-                    registry: registry, image: image, page: page
+                    registry: registry, image: image, actions: actions, page: page
                 )
             }
     }

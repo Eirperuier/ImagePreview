@@ -3,8 +3,9 @@ import AppKit
 
 /// Shows images over a window, opening out of the thumbnail that was clicked and closing back into it.
 ///
-/// While the images cover the window, its title bar is the viewer's: give it a ``title`` and a
-/// ``toolbar`` (or, from SwiftUI, a page with a `.toolbar` and a `.navigationTitle`).
+/// While the images cover the window, its title bar is the viewer's, in the window's own style: a
+/// ``title``, the close button and your ``actionsView`` on the toolbar if the window has one, at the end
+/// of its compact title bar if not (or, from SwiftUI, a page with a `.navigationTitle`).
 ///
 /// Swipe sideways with two fingers (or drag sideways) to move between images, pinch or
 /// double-click to zoom, and swipe or drag an image up or down to close it: it follows,
@@ -28,14 +29,18 @@ public final class ImagePreviewController {
     public var onDidDismiss: (() -> Void)?
     /// The window's title while the images cover it.
     public var title: String?
-    /// The window's toolbar while the images cover it; a click on an image hides and shows it.
-    public var toolbar: NSToolbar?
+    /// Buttons for the image on screen (share, delete), beside the close button: on the window's toolbar
+    /// if it has one, at the end of its title bar if not. A click on an image hides and shows them.
+    public var actionsView: NSView?
 
     /// A page that shows the stage inside other content (a SwiftUI hosting view), set before presenting.
     var pageView: NSView?
-    /// Makes a view that puts the page's title and toolbar on the window while it is in it (a SwiftUI page).
-    var makeTitlebar: (() -> NSView)?
+    /// Makes a view that puts the page's title (and with `true`, its toolbar) on the window while it is in it (a SwiftUI page).
+    var makeTitlebar: ((Bool) -> NSView)?
+    /// Makes the actions and close button for a title bar without a toolbar (a SwiftUI page).
+    var makeTitlebarControls: (() -> NSView)?
     private var titlebarView: NSView?
+    private var titlebarControls: NSTitlebarAccessoryViewController?
     public var index: Int { context.index }
     public private(set) var isPresented = false
     var isClosing: Bool { phase == .closing || phase == .closed }
@@ -168,8 +173,10 @@ public final class ImagePreviewController {
     }
     private var windowState: WindowState?
 
-    /// While the viewer covers the window, the title bar is the viewer's: its title and toolbar,
-    /// drawn dark. Whatever the change does to the app's layout happens out of sight.
+    /// While the viewer covers the window, the title bar is the viewer's: its title and controls, drawn
+    /// dark. The window keeps its style: a toolbar gets the viewer's toolbar, a compact title bar without
+    /// one (whose window has smaller corners) gets the controls at its end, never a toolbar.
+    /// Whatever the change does to the app's layout happens out of sight.
     /// (Outside the frame and SwiftUI updates it may be called from: SwiftUI's toolbar must not change during them.)
     private func takeWindow() {
         DispatchQueue.main.async { [weak self] in
@@ -187,22 +194,55 @@ public final class ImagePreviewController {
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none
             titlebar.forEach { $0.appearance = NSAppearance(named: .darkAqua) }
-            if let titlebarView = self.makeTitlebar?() {
+            let hasToolbar = window.toolbar != nil
+            if let titlebarView = self.makeTitlebar?(hasToolbar) {
                 titlebarView.frame = .zero
                 frame.addSubview(titlebarView, positioned: .below, relativeTo: page)
                 self.titlebarView = titlebarView
             } else {
-                window.toolbar = self.toolbar
+                if hasToolbar { window.toolbar = PreviewToolbar(controller: self) }
                 if let title = self.title { window.title = title }
             }
-            self.showToolbar()
+            if !hasToolbar {
+                let controls = NSTitlebarAccessoryViewController()
+                controls.view = self.makeTitlebarControls?() ?? self.appKitControls()
+                controls.layoutAttribute = .trailing
+                window.addTitlebarAccessoryViewController(controls)
+                self.titlebarControls = controls
+            }
+            self.showControls()
         }
     }
 
-    /// A click on an image hides and shows the toolbar.
-    private func showToolbar() {
+    /// A click on an image hides and shows the controls.
+    private func showControls() {
         guard windowState?.returning == false else { return }
-        (pageView ?? stage).window?.toolbar?.isVisible = context.accessoriesVisible
+        if let titlebarControls {
+            titlebarControls.isHidden = !context.accessoriesVisible
+        } else {
+            (pageView ?? stage).window?.toolbar?.isVisible = context.accessoriesVisible
+        }
+    }
+
+    /// The actions view and a close button, for a title bar without a toolbar.
+    private func appKitControls() -> NSView {
+        let close = NSButton(image: Self.closeImage, target: closeTarget, action: #selector(CloseTarget.close))
+        close.bezelStyle = .accessoryBarAction
+        let stack = NSStackView(views: [actionsView, close].compactMap { $0 })
+        stack.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        stack.frame.size = stack.fittingSize
+        return stack
+    }
+
+    static let closeImage = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")!
+
+    lazy var closeTarget = CloseTarget(self)
+
+    /// What a close button sends its action to.
+    @MainActor final class CloseTarget: NSObject {
+        weak var controller: ImagePreviewController?
+        init(_ controller: ImagePreviewController) { self.controller = controller }
+        @objc func close() { controller?.dismiss() }
     }
 
     /// As soon as anything of the window shows through (a drag, closing), it is the app's again.
@@ -212,6 +252,8 @@ public final class ImagePreviewController {
         DispatchQueue.main.async { [weak self] in
             self?.titlebarView?.removeFromSuperview()
             self?.titlebarView = nil
+            self?.titlebarControls?.removeFromParent()
+            self?.titlebarControls = nil
             window.toolbar = state.toolbar
             window.title = state.title
             window.titlebarAppearsTransparent = state.transparent
@@ -594,7 +636,7 @@ public final class ImagePreviewController {
         let onImage = currentPage?.imageFrame(in: overlay).contains(point) == true
         if !onImage { dismiss() } else if configuration.tapTogglesAccessories {
             context.accessoriesVisible.toggle()
-            showToolbar()
+            showControls()
         }
     }
 
@@ -892,6 +934,41 @@ public final class ImagePreviewController {
             clipView.alphaValue = state.opacity
             CATransaction.commit()
         }
+    }
+}
+
+/// The toolbar the viewer puts on a window that has one, for AppKit code: the close button, then the actions view.
+private final class PreviewToolbar: NSToolbar, NSToolbarDelegate {
+    private weak var controller: ImagePreviewController?
+    private static let close = NSToolbarItem.Identifier("preview.close")
+    private static let actions = NSToolbarItem.Identifier("preview.actions")
+
+    init(controller: ImagePreviewController) {
+        self.controller = controller
+        super.init(identifier: "preview")
+        delegate = self
+        displayMode = .iconOnly
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.close, .flexibleSpace] + (controller?.actionsView == nil ? [] : [Self.actions])
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: id)
+        if id == Self.close {
+            item.image = ImagePreviewController.closeImage
+            item.label = "Close"
+            item.target = controller?.closeTarget
+            item.action = #selector(ImagePreviewController.CloseTarget.close)
+        } else {
+            item.view = controller?.actionsView
+        }
+        return item
     }
 }
 

@@ -58,31 +58,13 @@ struct PostView: View {
         .task { await openFromEnvironment() }
         .imagePreview(selection: $opened, items: post.photos, configuration: .example) { photo in
             photo.image
+        } actions: { photo in
+            if let thumbnail = photo.thumbnail {
+                let image = Image(platform: thumbnail)
+                ShareLink(item: image, preview: SharePreview(post.text, image: image))
+            }
         } page: { page in
-            #if os(iOS)
-            let photo = post.photos[page.context.index]
             page.navigationTitle(post.author)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .bottomBar) {
-                        if let thumbnail = photo.thumbnail {
-                            let image = Image(platform: thumbnail)
-                            ShareLink(item: image, preview: SharePreview(post.text, image: image))
-                        }
-                    }
-                }
-            #else
-            let photo = post.photos[page.context.index]
-            page.navigationTitle(post.author)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        if let thumbnail = photo.thumbnail {
-                            let image = Image(platform: thumbnail)
-                            ShareLink(item: image, preview: SharePreview(post.text, image: image))
-                        }
-                    }
-                }
-            #endif
         }
     }
 }

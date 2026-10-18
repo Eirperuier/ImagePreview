@@ -6,7 +6,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 - **Follows your finger.** Drag an image up or down, or sideways past the first or last image: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
-- **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar and toolbar while the images cover it. Put a `.toolbar` on it as on any SwiftUI page.
+- **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar while the images cover it, in the window's own style (a compact title bar stays compact).
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
@@ -58,6 +58,18 @@ struct Gallery: View {
 
 `selection` follows the viewer: swiping changes it, closing sets it to `nil`, and setting it to `nil` closes the viewer.
 
+### Actions
+
+Buttons for the image on screen go beside the close button, where each platform puts a page's buttons: on iOS on the navigation bar; on the Mac on the window's toolbar if it has one, at the end of its title bar if not.
+
+```swift
+.imagePreview(selection: $opened, items: photos) { photo in
+    PreviewImage(url: photo.url, placeholder: photo.thumbnail)
+} actions: { photo in
+    ShareLink(item: photo.url)
+}
+```
+
 ### The page
 
 On iOS, iPadOS, Mac Catalyst and visionOS the viewer is a page in its own navigation controller. It has the system close button on the navigation bar and, for several images, where you are as the title. Dress the page yourself with the `page` closure: its `.toolbar` and `.navigationTitle` go on the system bars, which a tap hides and shows and a drag fades. `page.context` gives the index, the count, `dismiss()` and `select(_:)`:
@@ -75,7 +87,7 @@ On iOS, iPadOS, Mac Catalyst and visionOS the viewer is a page in its own naviga
 }
 ```
 
-On macOS the viewer lays itself over the window's content, and while the images cover the window its title bar is the page's: the page's title and toolbar replace the window's, drawn dark over the backdrop. The window gets its own back as soon as anything of it shows through, when an image is dragged or the viewer closes.
+On macOS the viewer lays itself over the window's content, and while the images cover the window its title bar is the page's, drawn dark over the backdrop. The window keeps its style: macOS draws a window with a toolbar with larger corners than one with a compact title bar, so a window with a toolbar shows the page's toolbar (the close button, the actions and the page's `.toolbar`), and one without keeps its compact title bar, with the page's title and the actions and close button at its end; there the page's `.toolbar` is not shown. The window gets its own title bar back as soon as anything of it shows through, when an image is dragged or the viewer closes.
 
 ## UIKit and AppKit
 
@@ -95,7 +107,7 @@ preview.present(from: view)
 
 The source closure is asked again when the viewer closes, so after scrolling the collection view to the image on screen, the image lands in the right cell. If there is no thumbnail on screen, the image fades out where it is.
 
-On iOS, put buttons on the bars through `preview.page.navigationItem` and `preview.page.toolbarItems`; on macOS, set `preview.title` and `preview.toolbar`. On both, `setPage(_:)` builds the page in SwiftUI before presenting.
+On iOS, put buttons on the bars through `preview.page.navigationItem` and `preview.page.toolbarItems`; on macOS, set `preview.title` and `preview.actionsView`. On both, `setPage(actions:_:)` builds the page in SwiftUI before presenting.
 
 ## Images
 

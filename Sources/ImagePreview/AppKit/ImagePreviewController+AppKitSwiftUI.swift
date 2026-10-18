@@ -2,20 +2,37 @@
 import SwiftUI
 
 extension ImagePreviewController {
-    /// Makes the viewer's page a SwiftUI view built around the images: its `.toolbar` and
-    /// `.navigationTitle` go on the window's title bar while the images cover it. Call before presenting.
+    /// Makes the viewer's page a SwiftUI view built around the images: its `.navigationTitle` goes on the
+    /// window's title bar while the images cover it, and its `.toolbar` on the window's toolbar if the
+    /// window has one. Call before presenting.
     public func setPage<Content: View>(@ViewBuilder _ content: @escaping (ImagePreviewPage) -> Content) {
-        let host = PreviewHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: stage), content: content))
+        setPage(actions: { _ in EmptyView() }, content)
+    }
+
+    /// Makes the viewer's page a SwiftUI view built around the images, with `actions` (buttons for the
+    /// image on screen) beside the close button: on the window's toolbar if it has one, in its title bar
+    /// otherwise. Call before presenting.
+    public func setPage<Actions: View, Content: View>(
+        @ViewBuilder actions: @escaping (ImagePreviewContext) -> Actions,
+        @ViewBuilder _ content: @escaping (ImagePreviewPage) -> Content
+    ) {
+        let context = context
+        let actions: (() -> AnyView)? = Actions.self == EmptyView.self ? nil : { AnyView(actions(context)) }
+        let host = PreviewHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: stage, actions: actions), content: content))
         host.controller = self
         host.sceneBridgingOptions = []
         pageView = host
         // The title and toolbar come from the same page built again without the images, in a view of
         // its own that bridges them to the window: a hosting view cannot start bridging once it is showing.
-        let context = context
-        makeTitlebar = {
-            let bar = NSHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: nil), content: content))
-            bar.sceneBridgingOptions = [.toolbars, .title]
+        makeTitlebar = { toolbar in
+            let bar = NSHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: nil, actions: actions), content: content))
+            bar.sceneBridgingOptions = toolbar ? [.toolbars, .title] : [.title]
             return bar
+        }
+        makeTitlebarControls = {
+            let controls = NSHostingView(rootView: PreviewTitlebarControls(context: context, actions: actions))
+            controls.frame.size = controls.fittingSize
+            return controls
         }
     }
 }
@@ -29,15 +46,17 @@ private final class PreviewHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
-/// The images, as a SwiftUI view: give it a `.toolbar`, a `.navigationTitle`, or overlays.
+/// The images, as a SwiftUI view: give it a `.navigationTitle`, a `.toolbar`, or overlays.
 ///
-/// It has a close button on the toolbar. The toolbar and the title are the window's while the images
-/// cover it; a click on an image hides and shows the toolbar.
+/// The title is the window's while the images cover it. In a window with a toolbar, the close button,
+/// the actions and the page's `.toolbar` go on it; a window without one keeps its compact title bar,
+/// with the actions and the close button at its end. A click on an image hides and shows them.
 public struct ImagePreviewPage: View {
     /// What the page can read (the index, the count) and do.
     public let context: ImagePreviewContext
     /// The stage; none in the page built for the title bar alone.
     let stage: NSView?
+    let actions: (() -> AnyView)?
 
     public var body: some View {
         Group {
@@ -51,8 +70,28 @@ public struct ImagePreviewPage: View {
             ToolbarItem(placement: .navigation) {
                 ImagePreviewCloseButton(context: context)
             }
+            if let actions {
+                ToolbarItemGroup(placement: .primaryAction) { actions() }
+            }
         }
         .modifier(HiddenToolbarBackground())
+    }
+}
+
+/// The actions and the close button, at the end of a title bar without a toolbar.
+private struct PreviewTitlebarControls: View {
+    let context: ImagePreviewContext
+    let actions: (() -> AnyView)?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            actions?()
+            ImagePreviewCloseButton(context: context)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.accessoryBar)
+        .padding(.horizontal, 8)
+        .frame(maxHeight: .infinity)
     }
 }
 
