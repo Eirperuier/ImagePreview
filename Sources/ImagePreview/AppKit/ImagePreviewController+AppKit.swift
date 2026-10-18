@@ -3,6 +3,9 @@ import AppKit
 
 /// Shows images over a window, opening out of the thumbnail that was clicked and closing back into it.
 ///
+/// While the images cover the window, its title bar is the viewer's: give it a ``title`` and a
+/// ``toolbar`` (or, from SwiftUI, a page with a `.toolbar` and a `.navigationTitle`).
+///
 /// Swipe sideways with two fingers (or drag sideways) to move between images, pinch or
 /// double-click to zoom, and swipe or drag an image up or down to close it: it follows,
 /// shrinks, and lets the window show through; let go and it flies back into its thumbnail,
@@ -23,15 +26,16 @@ public final class ImagePreviewController {
     public var onIndexChange: ((Int) -> Void)?
     public var onDismiss: (() -> Void)?
     public var onDidDismiss: (() -> Void)?
-    /// Drawn over the images, over the whole window, faded during drags. Clicks that land on
-    /// nothing it draws go through to the images.
-    public var accessoryView: NSView? {
-        didSet {
-            oldValue?.removeFromSuperview()
-            if overlay != nil { installAccessoryView() }
-        }
-    }
+    /// The window's title while the images cover it.
+    public var title: String?
+    /// The window's toolbar while the images cover it; a click on an image hides and shows it.
+    public var toolbar: NSToolbar?
 
+    /// A page that shows the stage inside other content (a SwiftUI hosting view), set before presenting.
+    var pageView: NSView?
+    /// Makes a view that puts the page's title and toolbar on the window while it is in it (a SwiftUI page).
+    var makeTitlebar: (() -> NSView)?
+    private var titlebarView: NSView?
     public var index: Int { context.index }
     public private(set) var isPresented = false
     var isClosing: Bool { phase == .closing || phase == .closed }
@@ -60,24 +64,24 @@ public final class ImagePreviewController {
 
     /// Opens the viewer over the window `view` is in.
     public func present(from view: NSView) {
-        // Above the content view, beside it: a SwiftUI hosting view does not draw views added
-        // into it, and this way the image can use the whole window, title bar included.
+        // Above the content view, beside it and below the title bar: a SwiftUI hosting view does
+        // not draw views added into it, and this way the backdrop covers the whole window.
         guard !isPresented, count > 0, let window = view.window, let content = window.contentView,
               let frame = content.superview else { return }
         isPresented = true
         Self.retained[ObjectIdentifier(self)] = self
         previousResponder = window.firstResponder
 
-        let overlay = OverlayView(controller: self)
-        overlay.frame = frame.bounds
-        overlay.autoresizingMask = [.width, .height]
-        frame.addSubview(overlay, positioned: .above, relativeTo: content)
-        self.overlay = overlay
-        build(in: overlay)
-        overlay.layoutSubtreeIfNeeded()
-        layout()
-        window.makeFirstResponder(overlay)
-        open()
+        let page = pageView ?? stage
+        page.frame = frame.bounds
+        page.autoresizingMask = [.width, .height]
+        overlay = stage as? OverlayView
+        build(in: stage)
+        needsOpen = true
+        frame.addSubview(page, positioned: .above, relativeTo: content)
+        page.layoutSubtreeIfNeeded()
+        window.makeFirstResponder(stage)
+        openIfNeeded()
     }
 
     public func dismiss() {
@@ -107,11 +111,15 @@ public final class ImagePreviewController {
 
     private var phase: Phase = .closed
     private weak var previousResponder: NSResponder?
+    /// The backdrop, the images and the image in flight, and what takes the clicks, swipes and keys.
+    lazy var stage: NSView = OverlayView(controller: self)
+    /// The stage, while it is presented.
     private var overlay: OverlayView?
+    /// Presented, and waiting for the stage to be laid out in the window to open.
+    private var needsOpen = false
     private let backdrop = FlippedView()
     private let pager = FlippedView()
     private let hero = HeroView()
-    private let accessoryContainer = AccessoryContainer()
     private var pages: [Int: PageView] = [:]
 
     private var images: [Int: PreviewImage] = [:]
@@ -136,29 +144,99 @@ public final class ImagePreviewController {
     /// Frames left in the hand-over from the landed image to its thumbnail.
     private var handoff: Int?
 
-    /// Where the images go: the window's content area, below the title bar (the backdrop covers it all).
+    /// Where the images go: the window's content area, below the title bar as the app has it
+    /// (the backdrop covers it all). The viewer's own title bar can be taller; the images stay put.
     private var area: CGRect {
         guard let overlay, let window = overlay.window else { return .zero }
-        return overlay.convert(window.contentLayoutRect, from: nil).intersection(overlay.bounds)
+        if windowState == nil { titlebarInset = max(overlay.convert(window.contentLayoutRect, from: nil).minY, 0) }
+        var area = overlay.bounds
+        area.origin.y += titlebarInset
+        area.size.height -= titlebarInset
+        return area
+    }
+    private var titlebarInset: CGFloat = 0
+
+    /// What the window had before the viewer took its title bar.
+    private struct WindowState {
+        var toolbar: NSToolbar?
+        var title: String
+        var transparent: Bool
+        var separator: NSTitlebarSeparatorStyle
+        var appearances: [(NSView, NSAppearance?)]
+        /// Being given back.
+        var returning = false
+    }
+    private var windowState: WindowState?
+
+    /// While the viewer covers the window, the title bar is the viewer's: its title and toolbar,
+    /// drawn dark. Whatever the change does to the app's layout happens out of sight.
+    /// (Outside the frame and SwiftUI updates it may be called from: SwiftUI's toolbar must not change during them.)
+    private func takeWindow() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.phase == .presented, self.windowState == nil else { return }
+            let page = self.pageView ?? self.stage
+            guard let window = page.window, let frame = page.superview else { return }
+            _ = self.area
+            // The title bar: what the window draws above the page.
+            let titlebar = Array(frame.subviews.drop { $0 !== page }.dropFirst())
+            self.windowState = WindowState(
+                toolbar: window.toolbar, title: window.title, transparent: window.titlebarAppearsTransparent,
+                separator: window.titlebarSeparatorStyle, appearances: titlebar.map { ($0, $0.appearance) }
+            )
+            // Nothing behind the title bar but the backdrop; light controls over it.
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            titlebar.forEach { $0.appearance = NSAppearance(named: .darkAqua) }
+            if let titlebarView = self.makeTitlebar?() {
+                titlebarView.frame = .zero
+                frame.addSubview(titlebarView, positioned: .below, relativeTo: page)
+                self.titlebarView = titlebarView
+            } else {
+                window.toolbar = self.toolbar
+                if let title = self.title { window.title = title }
+            }
+            self.showToolbar()
+        }
+    }
+
+    /// A click on an image hides and shows the toolbar.
+    private func showToolbar() {
+        guard windowState?.returning == false else { return }
+        (pageView ?? stage).window?.toolbar?.isVisible = context.accessoriesVisible
+    }
+
+    /// As soon as anything of the window shows through (a drag, closing), it is the app's again.
+    private func giveWindowBack() {
+        guard let state = windowState, !state.returning, let window = (pageView ?? stage).window else { return }
+        windowState?.returning = true
+        DispatchQueue.main.async { [weak self] in
+            self?.titlebarView?.removeFromSuperview()
+            self?.titlebarView = nil
+            window.toolbar = state.toolbar
+            window.title = state.title
+            window.titlebarAppearsTransparent = state.transparent
+            window.titlebarSeparatorStyle = state.separator
+            state.appearances.forEach { $0.appearance = $1 }
+            self?.windowState = nil
+        }
     }
     private var pageStride: CGFloat { area.width + configuration.pageSpacing }
 
     // MARK: Building
 
-    private func build(in overlay: OverlayView) {
+    private func build(in view: NSView) {
+        guard ticker == nil, let overlay = view as? OverlayView else { return }
         ticker = FrameTicker(view: overlay) { [weak self] dt in self?.tick(dt) }
         backdrop.wantsLayer = true
         backdrop.layer?.backgroundColor = configuration.backgroundColor
         backdrop.alphaValue = 0
         pager.isHidden = true
         hero.isHidden = true
-        accessoryContainer.alphaValue = 0
-        for view in [backdrop, pager, hero, accessoryContainer] as [NSView] {
+        for view in [backdrop, pager, hero] as [NSView] {
             view.frame = overlay.bounds
             view.autoresizingMask = view === pager ? [] : [.width, .height]
             overlay.addSubview(view)
         }
-        installAccessoryView()
 
         let doubleClick = NSClickGestureRecognizer(target: overlay, action: #selector(OverlayView.doubleClick(_:)))
         doubleClick.numberOfClicksRequired = 2
@@ -172,16 +250,9 @@ public final class ImagePreviewController {
         [doubleClick, click, pan].forEach(overlay.addGestureRecognizer)
     }
 
-    private func installAccessoryView() {
-        guard let accessoryView else { return }
-        accessoryView.frame = accessoryContainer.bounds
-        accessoryView.autoresizingMask = [.width, .height]
-        accessoryContainer.addSubview(accessoryView)
-        accessoryContainer.transparent = accessoryView
-    }
-
     fileprivate func layout() {
-        guard overlay != nil else { return }
+        guard let overlay, overlay.bounds.width > 0 else { return }
+        if needsOpen { return openIfNeeded() }
         pager.frame = area
         if pagerSprings == nil { pagerOffset = CGFloat(index) * pageStride }
         for page in pages.values { page.refit() }
@@ -327,6 +398,15 @@ public final class ImagePreviewController {
 
     private var fittedFrame: CGRect { area.placing(hero.image?.size ?? .zero, .fit) }
 
+    /// Opens once the stage has its size in the window.
+    private func openIfNeeded() {
+        guard needsOpen, let overlay, overlay.window != nil, overlay.bounds.width > 0 else { return }
+        needsOpen = false
+        pager.frame = area
+        pagerOffset = CGFloat(index) * pageStride
+        open()
+    }
+
     private func open() {
         let source = sourceProvider(index)
         if currentImage(index) == nil, let snap = snapshot(source) { fallbacks[index] = snap }
@@ -336,7 +416,6 @@ public final class ImagePreviewController {
         phase = .opening
         hideSource()
         setHero((reduceMotion ? nil : sourceState(source)) ?? .vanished(from: fittedFrame))
-        setAccessories(visible: true)
         animateHero(to: .presented(fittedFrame), spring: configuration.transitionSpring) { [weak self] in
             self?.didSettlePresented()
         }
@@ -347,7 +426,7 @@ public final class ImagePreviewController {
         currentPage?.setImage(currentImage(index), fade: false)
         pager.isHidden = false
         hero.isHidden = true
-        setAccessories(visible: true)
+        takeWindow()
     }
 
     private func liftHero() {
@@ -362,7 +441,7 @@ public final class ImagePreviewController {
     private func close(velocity: CGPoint) {
         if phase == .presented { liftHero() }
         phase = .closing
-        setAccessories(visible: false)
+        giveWindowBack()
         onDismiss?()
         let source = sourceProvider(index)
         if hiddenSource?.view !== source?.view { hiddenSource?.setHidden(false) }
@@ -413,8 +492,9 @@ public final class ImagePreviewController {
         handoff = nil
         closingSource = nil
         ticker?.stop()
+        giveWindowBack()
         let window = overlay?.window
-        overlay?.removeFromSuperview()
+        (pageView ?? stage).removeFromSuperview()
         overlay = nil
         if let previousResponder, window?.firstResponder == nil || window?.firstResponder === window {
             window?.makeFirstResponder(previousResponder)
@@ -460,9 +540,9 @@ public final class ImagePreviewController {
         default: return gesture = .none
         }
         stopSprings()
+        giveWindowBack()
         phase = .dragging
         drag = DismissDrag(start: heroState, anchor: point, axis: axis, container: area.size)
-        setAccessories(visible: false)
         gesture = .dismissing
     }
 
@@ -514,7 +594,7 @@ public final class ImagePreviewController {
         let onImage = currentPage?.imageFrame(in: overlay).contains(point) == true
         if !onImage { dismiss() } else if configuration.tapTogglesAccessories {
             context.accessoriesVisible.toggle()
-            setAccessories(visible: true)
+            showToolbar()
         }
     }
 
@@ -531,16 +611,6 @@ public final class ImagePreviewController {
         default: return false
         }
         return true
-    }
-
-    // MARK: Accessories
-
-    private func setAccessories(visible: Bool) {
-        let alpha: CGFloat = visible && context.accessoriesVisible ? 1 : 0
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = alpha > 0 ? 0.25 : 0.15
-            accessoryContainer.animator().alphaValue = alpha
-        }
     }
 
     // MARK: Animation
@@ -643,12 +713,10 @@ public final class ImagePreviewController {
         override func rightMouseDown(with event: NSEvent) {}
 
         @objc func click(_ g: NSClickGestureRecognizer) {
-            guard !accessoryHit(g) else { return }
             controller?.handleClick(at: g.location(in: self))
         }
 
         @objc func doubleClick(_ g: NSClickGestureRecognizer) {
-            guard !accessoryHit(g) else { return }
             controller?.handleDoubleClick(at: g.location(in: self))
         }
 
@@ -656,7 +724,6 @@ public final class ImagePreviewController {
             guard let controller else { return }
             switch g.state {
             case .began:
-                guard !accessoryHit(g) else { return }
                 let t = g.translation(in: self)
                 controller.beginGesture(at: g.location(in: self), direction: t)
                 controller.moveGesture(by: t, time: ProcessInfo.processInfo.systemUptime)
@@ -669,12 +736,6 @@ public final class ImagePreviewController {
             default:
                 break
             }
-        }
-
-        private func accessoryHit(_ g: NSGestureRecognizer) -> Bool {
-            guard let controller, let superview else { return false }
-            let hit = hitTest(convert(g.location(in: self), to: superview))
-            return hit?.isDescendant(of: controller.accessoryContainer) == true
         }
 
         /// Two-finger swipes: sideways moves between images, up or down closes. The momentum
@@ -721,6 +782,7 @@ public final class ImagePreviewController {
             self.controller = controller
             super.init(frame: .zero)
             contentView = CenteringClipView()
+            automaticallyAdjustsContentInsets = false
             drawsBackground = false
             hasVerticalScroller = false
             hasHorizontalScroller = false
@@ -831,20 +893,6 @@ public final class ImagePreviewController {
             CATransaction.commit()
         }
     }
-
-    /// Lets clicks through wherever the accessories draw nothing.
-    private final class AccessoryContainer: FlippedView {
-        weak var transparent: NSView?
-
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            guard alphaValue > 0.01 else { return nil }
-            let hit = super.hitTest(point)
-            if hit === self { return nil }
-            if let transparent, hit === transparent,
-               !transparent.drawsSomething(near: transparent.convert(point, from: superview)) { return nil }
-            return hit
-        }
-    }
 }
 
 /// An image drawn by its layer, stretched to the view's bounds.
@@ -877,30 +925,6 @@ final class LayerImageView: NSView {
 
 class FlippedView: NSView {
     override var isFlipped: Bool { true }
-}
-
-extension NSView {
-    /// Whether anything visible is drawn within a fingertip of `point` (in this view's coordinates).
-    func drawsSomething(near point: CGPoint, radius: CGFloat = 8) -> Bool {
-        guard let layer else { return true }
-        let side = Int(radius * 2)
-        var pixels = [UInt8](repeating: 0, count: side * side * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
-            if isFlipped {
-                context.translateBy(x: 0, y: CGFloat(side))
-                context.scaleBy(x: 1, y: -1)
-            }
-            context.translateBy(x: radius - point.x, y: radius - point.y)
-            layer.render(in: context)
-            return true
-        }
-        guard drawn else { return true }
-        return stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 8 }
-    }
 }
 
 /// The velocity of a drag, from its last few movements.

@@ -6,7 +6,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 - **Follows your finger.** Drag an image up or down, or sideways past the first or last image: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
-- **A real page.** On iOS the viewer is a view controller presented in a navigation controller of its own, with the system's navigation bar and toolbar over the images: put a `.toolbar` on it as on any SwiftUI page.
+- **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar and toolbar while the images cover it. Put a `.toolbar` on it as on any SwiftUI page.
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
@@ -75,7 +75,7 @@ On iOS, iPadOS, Mac Catalyst and visionOS the viewer is a page in its own naviga
 }
 ```
 
-On macOS the viewer lays itself over the window's content; the page there is a close button and a page indicator drawn over the images, to which you can add overlays.
+On macOS the viewer lays itself over the window's content, and while the images cover the window its title bar is the page's: the page's title and toolbar replace the window's, drawn dark over the backdrop. The window gets its own back as soon as anything of it shows through, when an image is dragged or the viewer closes.
 
 ## UIKit and AppKit
 
@@ -95,7 +95,7 @@ preview.present(from: view)
 
 The source closure is asked again when the viewer closes, so after scrolling the collection view to the image on screen, the image lands in the right cell. If there is no thumbnail on screen, the image fades out where it is.
 
-On iOS, put buttons on the bars through `preview.page.navigationItem` and `preview.page.toolbarItems`, or build the page in SwiftUI with `setPage(_:)` before presenting. On macOS, set `accessoryView` (or `setAccessories(_:)` with a SwiftUI view).
+On iOS, put buttons on the bars through `preview.page.navigationItem` and `preview.page.toolbarItems`; on macOS, set `preview.title` and `preview.toolbar`. On both, `setPage(_:)` builds the page in SwiftUI before presenting.
 
 ## Images
 

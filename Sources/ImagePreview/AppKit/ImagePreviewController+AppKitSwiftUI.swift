@@ -2,27 +2,76 @@
 import SwiftUI
 
 extension ImagePreviewController {
-    /// Draws a SwiftUI view over the images as the accessories.
-    public func setAccessories<Content: View>(_ content: Content) {
-        let host = NSHostingView(rootView: content)
-        host.wantsLayer = true
-        accessoryView = host
-    }
-
-    /// Draws a SwiftUI view built on the viewer's page over the images. Call before presenting.
+    /// Makes the viewer's page a SwiftUI view built around the images: its `.toolbar` and
+    /// `.navigationTitle` go on the window's title bar while the images cover it. Call before presenting.
     public func setPage<Content: View>(@ViewBuilder _ content: @escaping (ImagePreviewPage) -> Content) {
-        setAccessories(PreviewPageHost(page: ImagePreviewPage(context: context), content: content))
+        let host = PreviewHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: stage), content: content))
+        host.controller = self
+        host.sceneBridgingOptions = []
+        pageView = host
+        // The title and toolbar come from the same page built again without the images, in a view of
+        // its own that bridges them to the window: a hosting view cannot start bridging once it is showing.
+        let context = context
+        makeTitlebar = {
+            let bar = NSHostingView(rootView: PreviewPageHost(page: ImagePreviewPage(context: context, stage: nil), content: content))
+            bar.sceneBridgingOptions = [.toolbars, .title]
+            return bar
+        }
     }
 }
 
-/// What is drawn over the images, as a SwiftUI view: a close button and the page indicator,
-/// to which overlays can be added. Clicks on nothing of it reach the images.
+/// While the image flies home, the window underneath takes clicks and scrolls again.
+private final class PreviewHostingView<Content: View>: NSHostingView<Content> {
+    weak var controller: ImagePreviewController?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        controller?.isClosing == true ? nil : super.hitTest(point)
+    }
+}
+
+/// The images, as a SwiftUI view: give it a `.toolbar`, a `.navigationTitle`, or overlays.
+///
+/// It has a close button on the toolbar. The toolbar and the title are the window's while the images
+/// cover it; a click on an image hides and shows the toolbar.
 public struct ImagePreviewPage: View {
     /// What the page can read (the index, the count) and do.
     public let context: ImagePreviewContext
+    /// The stage; none in the page built for the title bar alone.
+    let stage: NSView?
 
     public var body: some View {
-        ImagePreviewAccessories(context: context)
+        Group {
+            if let stage {
+                PreviewStage(stage: stage).ignoresSafeArea()
+            } else {
+                Color.clear
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                ImagePreviewCloseButton(context: context)
+            }
+        }
+        .modifier(HiddenToolbarBackground())
     }
+}
+
+/// The images go under the toolbar as they are.
+private struct HiddenToolbarBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        } else {
+            content.toolbarBackground(.hidden, for: .windowToolbar)
+        }
+    }
+}
+
+/// Puts the viewer's stage (backdrop, pages, the image in flight) in the SwiftUI page.
+private struct PreviewStage: NSViewRepresentable {
+    let stage: NSView
+
+    func makeNSView(context: Context) -> NSView { stage }
+    func updateNSView(_ view: NSView, context: Context) {}
 }
 #endif

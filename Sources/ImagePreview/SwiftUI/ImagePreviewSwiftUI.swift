@@ -255,7 +255,7 @@ struct ImagePreviewModifier<Item: Identifiable, Page: View>: ViewModifier {
     }
 }
 
-// MARK: - Accessories
+// MARK: - Page
 
 /// Builds the page in a body, so what it reads of the context (the index) keeps it up to date.
 struct PreviewPageHost<Content: View>: View {
@@ -270,42 +270,17 @@ struct ImagePreviewDefaultPage: View {
     let page: ImagePreviewPage
 
     var body: some View {
-        #if canImport(UIKit)
         let context = page.context
-        page.navigationTitle(context.count > 1 ? Text("\(context.index + 1) / \(context.count)") : Text(verbatim: ""))
-            .navigationBarTitleDisplayMode(.inline)
+        let title = page.navigationTitle(context.count > 1 ? Text("\(context.index + 1) / \(context.count)") : Text(verbatim: ""))
+        #if canImport(UIKit)
+        title.navigationBarTitleDisplayMode(.inline)
         #else
-        page
+        title
         #endif
     }
 }
 
-/// The accessories the viewer draws unless you give your own: a close button and, for more
-/// than one image, where you are among them.
-public struct ImagePreviewAccessories: View {
-    let context: ImagePreviewContext
-
-    public init(context: ImagePreviewContext) {
-        self.context = context
-    }
-
-    public var body: some View {
-        VStack {
-            HStack {
-                ImagePreviewCloseButton(context: context)
-                Spacer()
-            }
-            Spacer()
-            if context.count > 1 {
-                ImagePreviewPageIndicator(context: context)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-}
-
-/// A button that closes the viewer: the bar's close button on iOS, a round one over the image elsewhere.
+/// A button that closes the viewer, for the page's toolbar: the bar's close button on iOS.
 public struct ImagePreviewCloseButton: View {
     let context: ImagePreviewContext
 
@@ -323,19 +298,7 @@ public struct ImagePreviewCloseButton: View {
                 .accessibilityLabel(Text("Close"))
         }
         #else
-        Button {
-            context.dismiss()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                .background(.black.opacity(0.4), in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text("Close"))
-        .keyboardShortcut(.cancelAction)
+        Button { context.dismiss() } label: { Label("Close", systemImage: "xmark") }
         #endif
     }
 }

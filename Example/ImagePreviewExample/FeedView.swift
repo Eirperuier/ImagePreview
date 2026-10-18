@@ -55,6 +55,7 @@ struct PostView: View {
             }
         }
         .padding(16)
+        .task { await openFromEnvironment() }
         .imagePreview(selection: $opened, items: post.photos, configuration: .example) { photo in
             photo.image
         } page: { page in
@@ -71,9 +72,32 @@ struct PostView: View {
                     }
                 }
             #else
-            page
+            let photo = post.photos[page.context.index]
+            page.navigationTitle(post.author)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        if let thumbnail = photo.thumbnail {
+                            let image = Image(platform: thumbnail)
+                            ShareLink(item: image, preview: SharePreview(post.text, image: image))
+                        }
+                    }
+                }
             #endif
         }
+    }
+}
+
+extension PostView {
+    /// `PREVIEW_OPEN` (a photo id) opens that image on launch, and `PREVIEW_CLOSE_AFTER` (seconds)
+    /// closes it again: a way to look at the viewer without driving it.
+    func openFromEnvironment() async {
+        let environment = ProcessInfo.processInfo.environment
+        guard let id = environment["PREVIEW_OPEN"], post.photos.contains(where: { $0.id == id }) else { return }
+        try? await Task.sleep(for: .seconds(1))
+        opened = id
+        guard let seconds = environment["PREVIEW_CLOSE_AFTER"].flatMap(Double.init) else { return }
+        try? await Task.sleep(for: .seconds(seconds))
+        opened = nil
     }
 }
 

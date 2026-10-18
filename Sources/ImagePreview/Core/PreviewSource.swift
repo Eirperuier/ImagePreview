@@ -48,20 +48,20 @@ public struct ImagePreviewConfiguration: Sendable {
     public var transitionSpring: PreviewSpring = .transition
     /// The spring that puts the image back after a drag that did not close it.
     public var restoreSpring: PreviewSpring = .restore
-    /// A single tap hides and shows the accessories (otherwise it closes the viewer).
+    /// A single tap (a click on the Mac) hides and shows the bars (otherwise it closes the viewer).
     public var tapTogglesAccessories = true
 
     public init() {}
 }
 
-/// What the accessories drawn over the viewer can read and do.
+/// What the viewer's page can read and do.
 @MainActor @Observable
 public final class ImagePreviewContext {
     /// The index of the image on screen.
     public internal(set) var index: Int
     /// How many images there are.
     public internal(set) var count: Int
-    /// Whether the accessories are showing (a tap toggles them; a drag hides them).
+    /// Whether the bars are showing (a tap toggles them).
     public internal(set) var accessoriesVisible = true
     @ObservationIgnored var onDismiss: () -> Void = {}
     @ObservationIgnored var onSelect: (Int) -> Void = { _ in }
