@@ -26,23 +26,33 @@ extension View {
         configuration: ImagePreviewConfiguration = .init(),
         image: @escaping (Item) -> PreviewImage
     ) -> some View {
-        imagePreview(selection: selection, items: items, configuration: configuration, image: image) { context in
-            ImagePreviewAccessories(context: context)
+        imagePreview(selection: selection, items: items, configuration: configuration, image: image) { page in
+            ImagePreviewDefaultPage(page: page)
         }
     }
 
-    /// Shows `items` full screen while `selection` is set, with your own accessories drawn over the images.
+    /// Shows `items` full screen while `selection` is set, on a page you dress yourself.
     ///
-    /// The accessories cover the screen; touches that land on nothing of theirs reach the images.
-    /// A tap hides and shows them, and they fade while an image is dragged.
-    public func imagePreview<Item: Identifiable, Accessories: View>(
+    /// On iOS the page is a real page in a navigation controller: give it a `.toolbar` and a
+    /// `.navigationTitle` for the bars over the images, which a tap hides and shows and a drag fades.
+    ///
+    /// ```swift
+    /// .imagePreview(selection: $opened, items: photos) { photo in
+    ///     PreviewImage(url: photo.url, placeholder: photo.thumbnail)
+    /// } page: { page in
+    ///     page.toolbar {
+    ///         ToolbarItem(placement: .bottomBar) { ShareLink(item: photos[page.context.index].url) }
+    ///     }
+    /// }
+    /// ```
+    public func imagePreview<Item: Identifiable, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration = .init(),
         image: @escaping (Item) -> PreviewImage,
-        @ViewBuilder accessories: @escaping (ImagePreviewContext) -> Accessories
+        @ViewBuilder page: @escaping (ImagePreviewPage) -> Page
     ) -> some View {
-        modifier(ImagePreviewModifier(selection: selection, items: items, configuration: configuration, image: image, accessories: accessories))
+        modifier(ImagePreviewModifier(selection: selection, items: items, configuration: configuration, image: image, page: page))
     }
 
     /// Marks this view as the thumbnail of the item with `id`: the viewer opens out of it and
@@ -179,13 +189,13 @@ final class PreviewPresenter {
     private var controller: ImagePreviewController?
     private var shownID: AnyHashable?
 
-    func update<Item: Identifiable, Accessories: View>(
+    func update<Item: Identifiable, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration,
         registry: PreviewRegistry,
         image: @escaping (Item) -> PreviewImage,
-        accessories: @escaping (ImagePreviewContext) -> Accessories
+        page: @escaping (ImagePreviewPage) -> Page
     ) {
         let selected = selection.wrappedValue
         guard let selected else {
@@ -216,19 +226,19 @@ final class PreviewPresenter {
             self.shownID = nil
             if selection.wrappedValue != nil { selection.wrappedValue = nil }
         }
-        controller.setAccessories(accessories(controller.context))
+        controller.setPage(page)
         self.controller = controller
         shownID = AnyHashable(selected)
         controller.present(from: host)
     }
 }
 
-struct ImagePreviewModifier<Item: Identifiable, Accessories: View>: ViewModifier {
+struct ImagePreviewModifier<Item: Identifiable, Page: View>: ViewModifier {
     let selection: Binding<Item.ID?>
     let items: [Item]
     let configuration: ImagePreviewConfiguration
     let image: (Item) -> PreviewImage
-    let accessories: (ImagePreviewContext) -> Accessories
+    let page: (ImagePreviewPage) -> Page
     @State private var registry = PreviewRegistry()
     @State private var presenter = PreviewPresenter()
 
@@ -239,13 +249,36 @@ struct ImagePreviewModifier<Item: Identifiable, Accessories: View>: ViewModifier
             .onChange(of: selection.wrappedValue, initial: true) {
                 presenter.update(
                     selection: selection, items: items, configuration: configuration,
-                    registry: registry, image: image, accessories: accessories
+                    registry: registry, image: image, page: page
                 )
             }
     }
 }
 
 // MARK: - Accessories
+
+/// Builds the page in a body, so what it reads of the context (the index) keeps it up to date.
+struct PreviewPageHost<Content: View>: View {
+    let page: ImagePreviewPage
+    let content: (ImagePreviewPage) -> Content
+
+    var body: some View { content(page) }
+}
+
+/// The page the viewer shows unless you give your own: where you are among the images, as the title.
+struct ImagePreviewDefaultPage: View {
+    let page: ImagePreviewPage
+
+    var body: some View {
+        #if canImport(UIKit)
+        let context = page.context
+        page.navigationTitle(context.count > 1 ? Text("\(context.index + 1) / \(context.count)") : Text(verbatim: ""))
+            .navigationBarTitleDisplayMode(.inline)
+        #else
+        page
+        #endif
+    }
+}
 
 /// The accessories the viewer draws unless you give your own: a close button and, for more
 /// than one image, where you are among them.
@@ -272,7 +305,7 @@ public struct ImagePreviewAccessories: View {
     }
 }
 
-/// A round button that closes the viewer.
+/// A button that closes the viewer: the bar's close button on iOS, a round one over the image elsewhere.
 public struct ImagePreviewCloseButton: View {
     let context: ImagePreviewContext
 
@@ -281,6 +314,15 @@ public struct ImagePreviewCloseButton: View {
     }
 
     public var body: some View {
+        #if canImport(UIKit)
+        // The bar's own close button.
+        if #available(iOS 26.0, visionOS 26.0, *) {
+            Button(role: .close) { context.dismiss() }
+        } else {
+            Button { context.dismiss() } label: { Image(systemName: "xmark") }
+                .accessibilityLabel(Text("Close"))
+        }
+        #else
         Button {
             context.dismiss()
         } label: {
@@ -294,6 +336,7 @@ public struct ImagePreviewCloseButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel(Text("Close"))
         .keyboardShortcut(.cancelAction)
+        #endif
     }
 }
 

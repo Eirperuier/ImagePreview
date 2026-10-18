@@ -93,4 +93,42 @@ final class GestureTests: XCTestCase {
         at(0.5, 0.85).press(forDuration: 0.02, thenDragTo: at(0.5, 0.45), withVelocity: 180, thenHoldForDuration: 0.2)
         sleep(2)
     }
+    /// A slow flight home and a long, slow scroll that starts while the image is still flying,
+    /// so the scroll is going on when the image lands and the viewer goes.
+    @MainActor
+    func testLandingDuringALongScroll() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["PREVIEW_TRANSITION_RESPONSE"] = "2.4"
+        app.launch()
+        let image = app.images.element(boundBy: 2)
+        XCTAssertTrue(image.waitForExistence(timeout: 15))
+        let screen = app.windows.firstMatch
+        func at(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+
+        image.tap()
+        sleep(4)
+        app.buttons["Close"].tap()
+        at(0.5, 0.9).press(forDuration: 0.02, thenDragTo: at(0.5, 0.3), withVelocity: 120, thenHoldForDuration: 0.2)
+        sleep(2)
+    }
+    /// Opens the first image and holds it, then swipes to the second and holds again, for screenshots of the bars.
+    @MainActor
+    func testBars() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let image = app.images.element(boundBy: 0)
+        XCTAssertTrue(image.waitForExistence(timeout: 15))
+        let screen = app.windows.firstMatch
+        func at(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+        image.tap()
+        sleep(4)
+        at(0.85, 0.6).press(forDuration: 0.05, thenDragTo: at(0.15, 0.6), withVelocity: 900, thenHoldForDuration: 0)
+        sleep(4)
+        at(0.5, 0.6).tap()
+        sleep(3)
+    }
 }

@@ -15,6 +15,9 @@ import UIKit
 /// }
 /// preview.present(from: view)
 /// ```
+///
+/// The viewer is a page presented over the view controller `view` is in, inside a navigation
+/// controller of its own: put buttons on its navigation bar and toolbar through ``page``.
 @MainActor
 public final class ImagePreviewController {
     /// What the accessories can read (the index, whether they are showing) and do.
@@ -26,17 +29,12 @@ public final class ImagePreviewController {
     public var onDismiss: (() -> Void)?
     /// The viewer finished closing and is gone.
     public var onDidDismiss: (() -> Void)?
-    /// Drawn over the images, full screen, faded with a tap and during drags: close buttons,
-    /// captions, a page indicator. Touches outside its subviews go through to the images.
-    public var accessoryView: UIView? {
-        didSet {
-            oldValue?.removeFromSuperview()
-            if isLoaded { installAccessoryView() }
-        }
-    }
+    /// The page in the viewer's navigation controller. Set its `navigationItem` and `toolbarItems`
+    /// for the bars over the images, which a tap hides and shows and a drag fades.
+    public var page: UIViewController { pageController ?? stage }
 
-    /// A view controller whose view is the accessory view (a SwiftUI hosting controller), kept as the viewer's child.
-    var accessoryHost: UIViewController?
+    /// A page that shows the stage inside other content (a SwiftUI hosting controller), set before presenting.
+    var pageController: UIViewController?
 
     /// The image on screen.
     public var index: Int { context.index }
@@ -70,22 +68,23 @@ public final class ImagePreviewController {
 
     // MARK: Presenting
 
-    /// Opens the viewer over the window `view` is in.
+    /// Opens the viewer over the view controller `view` is in.
     public func present(from view: UIView) {
-        guard !isPresented, count > 0, let scene = view.window?.windowScene else { return }
+        guard !isPresented, count > 0, var presenter = view.closestViewController else { return }
+        // A viewer still putting its last image home goes now.
+        for other in Self.retained.values where other.phase == .closed { other.retire() }
+        while let presented = presenter.presentedViewController, !presented.isBeingDismissed { presenter = presented }
         isPresented = true
         Self.retained[ObjectIdentifier(self)] = self
 
-        let window = UIWindow(windowScene: scene)
-        window.windowLevel = UIWindow.Level(rawValue: (view.window?.windowLevel.rawValue ?? UIWindow.Level.normal.rawValue) + 1)
-        window.backgroundColor = .clear
-        let root = PreviewRootViewController(controller: self)
-        window.rootViewController = root
-        previousKeyWindow = scene.keyWindow
-        self.window = window
-        window.makeKeyAndVisible()
-        root.view.layoutIfNeeded()
-        open()
+        let navigation = PreviewNavigationController(controller: self, page: page)
+        navigation.modalPresentationStyle = .custom
+        navigation.transitioningDelegate = transitioning
+        navigation.modalPresentationCapturesStatusBarAppearance = true
+        self.navigation = navigation
+        needsOpen = true
+        // Without animation: the images move by the viewer's own springs, from the first frame.
+        presenter.present(navigation, animated: false)
     }
 
     /// Closes the viewer, into the thumbnail of the image on screen if it is visible.
@@ -113,15 +112,17 @@ public final class ImagePreviewController {
     private static var retained: [ObjectIdentifier: ImagePreviewController] = [:]
 
     private var phase: Phase = .closed
-    private var window: UIWindow?
-    private weak var previousKeyWindow: UIWindow?
-    private weak var root: PreviewRootViewController?
-    private var isLoaded: Bool { root?.isViewLoaded == true }
+    private var navigation: PreviewNavigationController?
+    lazy var stage = PreviewStageViewController(controller: self)
+    private let transitioning = PreviewTransitioning()
+    /// Presented, and waiting for the stage to be on screen to open.
+    private var needsOpen = false
+    private var root: UIView? { stage.viewIfLoaded }
+    private var isLoaded: Bool { stage.isViewLoaded }
 
     private let backdrop = UIView()
     private let pager = PreviewPagerView()
     private let hero = HeroView()
-    private let accessoryContainer = PassthroughView()
     private var pages: [Int: PreviewPageView] = [:]
     private var isLayingOut = false
 
@@ -142,8 +143,8 @@ public final class ImagePreviewController {
     private var landing: Landing?
     /// Frames left in the hand-over from the landed image to its thumbnail.
     private var handoff: Int?
-    /// Once the image is home: the scroll views to wait for before the window goes, and since when.
-    private var retiring: ([UIScrollView], CFTimeInterval)?
+    /// How much the bars show: 0 while they are hidden, before opening and while dragging.
+    fileprivate var barsAlpha: CGFloat = 0
     /// The status bar is drawn as the app draws it, not light over the dark backdrop.
     private var statusBarFollowsApp = false
 
@@ -155,9 +156,7 @@ public final class ImagePreviewController {
 
     // MARK: Building
 
-    fileprivate func load(into root: PreviewRootViewController) {
-        self.root = root
-        let view: UIView = root.view
+    fileprivate func load(into view: UIView) {
         view.backgroundColor = .clear
         backdrop.backgroundColor = UIColor(cgColor: configuration.backgroundColor)
         backdrop.alpha = 0
@@ -168,6 +167,7 @@ public final class ImagePreviewController {
         pager.showsVerticalScrollIndicator = false
         pager.contentInsetAdjustmentBehavior = .never
         pager.scrollsToTop = false
+        pager.hidesEdgeEffects()
         pager.delegate = gestureDelegate
         pager.isHidden = true
         // On an unzoomed image, a drag up or down, or sideways past the first or last image,
@@ -181,10 +181,6 @@ public final class ImagePreviewController {
         hero.isUserInteractionEnabled = false
         view.addSubview(hero)
 
-        accessoryContainer.alpha = 0
-        view.addSubview(accessoryContainer)
-        installAccessoryView()
-
         doubleTap.numberOfTapsRequired = 2
         singleTap.require(toFail: doubleTap)
         [dismissPan, singleTap, doubleTap].forEach { $0.delegate = gestureDelegate }
@@ -192,25 +188,14 @@ public final class ImagePreviewController {
         [dismissPan, singleTap, doubleTap].forEach(view.addGestureRecognizer)
     }
 
-    private func installAccessoryView() {
-        guard let accessoryView else { return }
-        if let host = accessoryHost, let root { root.addChild(host) }
-        accessoryView.frame = accessoryContainer.bounds
-        accessoryView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        accessoryContainer.addSubview(accessoryView)
-        accessoryContainer.transparent = accessoryView
-        if let host = accessoryHost, let root { host.didMove(toParent: root) }
-    }
-
     fileprivate func layout(in view: UIView) {
         let bounds = view.bounds
         backdrop.frame = bounds
         hero.frame = bounds
-        accessoryContainer.frame = bounds
 
         let width = bounds.width + configuration.pageSpacing
         let pagerFrame = CGRect(x: -configuration.pageSpacing / 2, y: 0, width: width, height: bounds.height)
-        guard pager.frame != pagerFrame else { return }
+        guard pager.frame != pagerFrame else { return openIfNeeded() }
         isLayingOut = true
         pager.frame = pagerFrame
         pager.contentSize = CGSize(width: width * CGFloat(count), height: bounds.height)
@@ -218,6 +203,7 @@ public final class ImagePreviewController {
         for (i, page) in pages { page.frame = pageFrame(i) }
         isLayingOut = false
         updatePages()
+        openIfNeeded()
 
         switch phase {
         case .opening, .restoring: retargetHero()
@@ -331,13 +317,13 @@ public final class ImagePreviewController {
 
     /// The thumbnail's frame in the viewer, if it is on screen.
     private func visibleFrame(of source: PreviewSource?) -> CGRect? {
-        guard let frame = frame(of: source), let root = root?.view, frame.intersects(root.bounds) else { return nil }
+        guard let frame = frame(of: source), let root, frame.intersects(root.bounds) else { return nil }
         return frame
     }
 
     /// The thumbnail's frame in the viewer, on screen or not, while it is in a window.
     private func frame(of source: PreviewSource?) -> CGRect? {
-        guard let view = source?.view, view.window != nil, let root = root?.view else { return nil }
+        guard let view = source?.view, view.window != nil, let root, root.window != nil else { return nil }
         let frame = view.convert(view.bounds, to: root)
         return frame.width > 1 && frame.height > 1 ? frame : nil
     }
@@ -357,8 +343,15 @@ public final class ImagePreviewController {
     // MARK: Opening and closing
 
     private var fittedFrame: CGRect {
-        guard let root = root?.view else { return .zero }
+        guard let root else { return .zero }
         return root.bounds.placing(hero.imageView.image?.size ?? .zero, .fit)
+    }
+
+    /// Opens once the stage is in the window and has its size, before that frame is drawn.
+    private func openIfNeeded() {
+        guard needsOpen, let root, root.window != nil, root.bounds.width > 0 else { return }
+        needsOpen = false
+        open()
     }
 
     private func open() {
@@ -376,6 +369,8 @@ public final class ImagePreviewController {
         let fitted = fittedFrame
         let start = UIAccessibility.isReduceMotionEnabled ? nil : sourceState(source)
         setHero(start ?? .vanished(from: fitted))
+        // The navigation controller shows its bars as it appears; they come in with the image instead.
+        navigation?.bars.forEach { $0.alpha = 0 }
         setAccessories(visible: true, delay: 0.06)
         animateHero(to: .presented(fitted), spring: configuration.transitionSpring) { [weak self] in
             self?.didSettlePresented()
@@ -388,12 +383,12 @@ public final class ImagePreviewController {
         pager.isHidden = false
         hero.isHidden = true
         setAccessories(visible: true)
-        root?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+        navigation?.setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
 
     /// Moves the image from the page into the hero, where it can be dragged and flown.
     private func liftHero() {
-        guard let root = root?.view, let page = currentPage else { return }
+        guard let root, let page = currentPage else { return }
         let image = page.imageView.convert(page.imageView.bounds, to: root)
         hero.imageView.image = page.image
         hero.isHidden = false
@@ -404,11 +399,9 @@ public final class ImagePreviewController {
     private func close(velocity: CGPoint) {
         if phase == .presented { liftHero() }
         phase = .closing
-        // From here the app has the touches and the keyboard again: the page can be scrolled while
-        // the image flies home. Handing the key window back now, not when the viewer's window goes,
-        // keeps that change from landing in the middle of a scroll and resetting it.
-        window?.isUserInteractionEnabled = false
-        if previousKeyWindow?.windowScene != nil { previousKeyWindow?.makeKey() }
+        // From here the app has the touches again: the page can be scrolled while the image flies home.
+        transitioning.presentation?.passesTouches = true
+        navigation?.resignFirstResponder()
         setAccessories(visible: false)
         onDismiss?()
 
@@ -450,33 +443,22 @@ public final class ImagePreviewController {
         handOverOrFinish()
     }
 
-    /// The image is home. The viewer's window stays, empty and letting every touch through,
-    /// until the page the thumbnail is on has stopped scrolling: hiding a window over a scroll in
-    /// progress makes the system lay the app's window out again, and a navigation bar with a
-    /// large title then knocks the scroll off course (a visible jump under the finger).
+    /// The image is home: the page, empty and letting every touch through, is dismissed.
     private func finish() {
         handoff = nil
         hero.isHidden = true
         backdrop.alpha = 0
-        retiring = (scrollViews(around: closingSource?.view), CACurrentMediaTime())
         closingSource = nil
-        ticker.start()
+        retire()
     }
 
     private func retire() {
-        guard let (scrollViews, since) = retiring else { return }
-        let atRest = scrollViews.allSatisfy { $0.window == nil || (!$0.isTracking && !$0.isDragging && !$0.isDecelerating) }
-        guard atRest || CACurrentMediaTime() - since > 5 else { return }
-        retiring = nil
         ticker.stop()
-        window?.isHidden = true
-        window = nil
+        handoff = nil
+        navigation?.presentingViewController?.dismiss(animated: false)
+        navigation = nil
         isPresented = false
         Self.retained[ObjectIdentifier(self)] = nil
-    }
-
-    private func scrollViews(around view: UIView?) -> [UIScrollView] {
-        sequence(first: view?.superview) { $0?.superview }.compactMap { $0 as? UIScrollView }
     }
 
     /// The target of the running animation, worked out again (the image or the screen changed size).
@@ -514,7 +496,7 @@ public final class ImagePreviewController {
     }
 
     fileprivate func handlePan(_ pan: UIPanGestureRecognizer) {
-        guard let root = root?.view else { return }
+        guard let root else { return }
         switch pan.state {
         case .began:
             if phase == .presented { liftHero() }
@@ -547,7 +529,7 @@ public final class ImagePreviewController {
         if configuration.tapTogglesAccessories {
             context.accessoriesVisible.toggle()
             setAccessories(visible: true)
-            root?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            navigation?.setNeedsUpdateOfHomeIndicatorAutoHidden()
         } else {
             dismiss()
         }
@@ -560,11 +542,14 @@ public final class ImagePreviewController {
 
     // MARK: Accessories
 
+    /// Shows or hides the navigation bar and toolbar, fading them where they are.
     private func setAccessories(visible: Bool, delay: TimeInterval = 0) {
-        let alpha: CGFloat = visible && context.accessoriesVisible ? 1 : 0
-        guard accessoryContainer.alpha != alpha else { return }
-        UIView.animate(withDuration: alpha > 0 ? 0.25 : 0.15, delay: delay, options: [.beginFromCurrentState, .allowUserInteraction]) {
-            self.accessoryContainer.alpha = alpha
+        guard let navigation else { return }
+        barsAlpha = visible && context.accessoriesVisible ? 1 : 0
+        let bars = navigation.bars
+        guard bars.contains(where: { $0.alpha != barsAlpha }) else { return }
+        UIView.animate(withDuration: barsAlpha > 0 ? 0.25 : 0.15, delay: delay, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            bars.forEach { $0.alpha = self.barsAlpha }
         }
     }
 
@@ -582,11 +567,11 @@ public final class ImagePreviewController {
         return app.prefersStatusBarHidden
     }
 
-    /// The view controller of the app's window that decides its status bar, the way UIKit finds it.
+    /// The view controller under the viewer that decides the status bar, the way UIKit finds it.
     private func appStatusBarController(_ child: KeyPath<UIViewController, UIViewController?>) -> UIViewController? {
-        var controller = previousKeyWindow?.rootViewController
+        var controller = navigation?.presentingViewController?.view.window?.rootViewController
         while let current = controller {
-            if let presented = current.presentedViewController, !presented.isBeingDismissed,
+            if let presented = current.presentedViewController, presented !== navigation, !presented.isBeingDismissed,
                presented.modalPresentationCapturesStatusBarAppearance || presented.modalPresentationStyle == .fullScreen {
                 controller = presented
             } else if let next = current[keyPath: child] {
@@ -626,7 +611,6 @@ public final class ImagePreviewController {
     }
 
     private func tick(_ dt: Double) {
-        if retiring != nil { return retire() }
         if let handoff { return handOver(handoff) }
         guard var springs else { return ticker.stop() }
         if phase == .closing, var landing, let frame = frame(of: closingSource) {
@@ -644,7 +628,7 @@ public final class ImagePreviewController {
         if phase == .closing, !statusBarFollowsApp, heroState.backdrop < 0.5 {
             statusBarFollowsApp = true
             #if !os(visionOS)
-            UIView.animate(withDuration: 0.2) { self.root?.setNeedsStatusBarAppearanceUpdate() }
+            UIView.animate(withDuration: 0.2) { self.navigation?.setNeedsStatusBarAppearanceUpdate() }
             #endif
         }
         if done {
@@ -700,21 +684,15 @@ public final class ImagePreviewController {
             return controller.canBeginDrag(velocity: pan.velocity(in: pan.view))
         }
 
-        // A touch on an accessory belongs to it alone.
-        func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            guard let controller, let view = touch.view else { return true }
-            return !view.isDescendant(of: controller.accessoryContainer)
-        }
-
         func scrollViewDidScroll(_ scrollView: UIScrollView) { controller?.pagerDidScroll() }
     }
 }
 
 // MARK: - Views
 
-/// The window's root: lays the viewer out and speaks for it to the system (status bar, keys).
-private final class PreviewRootViewController: UIViewController {
-    private let controller: ImagePreviewController
+/// The page's content: the backdrop, the images and the image in flight.
+final class PreviewStageViewController: UIViewController {
+    private weak var controller: ImagePreviewController?
 
     init(controller: ImagePreviewController) {
         self.controller = controller
@@ -724,27 +702,95 @@ private final class PreviewRootViewController: UIViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    override func loadView() { view = StageView() }
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.accessibilityViewIsModal = true
-        controller.load(into: self)
-    }
-
-    override func accessibilityPerformEscape() -> Bool {
-        controller.dismiss()
-        return true
+        controller?.load(into: view)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        controller.layout(in: view)
+        controller?.layout(in: view)
+    }
+
+    override func setToolbarItems(_ items: [UIBarButtonItem]?, animated: Bool) {
+        super.setToolbarItems(items, animated: animated)
+        (navigationController as? PreviewNavigationController)?.updateToolbar()
+    }
+
+    /// Lays out again when it is put in a window, where the viewer can open.
+    private final class StageView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil { setNeedsLayout() }
+        }
+    }
+}
+
+/// The presented navigation controller: speaks for the viewer to the system (status bar, keys, VoiceOver).
+final class PreviewNavigationController: UINavigationController {
+    private weak var controller: ImagePreviewController?
+
+    init(controller: ImagePreviewController, page: UIViewController) {
+        self.controller = controller
+        super.init(rootViewController: page)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.accessibilityViewIsModal = true
+        // Light bars with nothing behind them, over the dark backdrop.
+        overrideUserInterfaceStyle = .dark
+        let bar = UINavigationBarAppearance()
+        bar.configureWithTransparentBackground()
+        navigationBar.standardAppearance = bar
+        navigationBar.scrollEdgeAppearance = bar
+        navigationBar.compactAppearance = bar
+        let toolbarAppearance = UIToolbarAppearance()
+        toolbarAppearance.configureWithTransparentBackground()
+        toolbar.standardAppearance = toolbarAppearance
+        toolbar.scrollEdgeAppearance = toolbarAppearance
+        toolbar.compactAppearance = toolbarAppearance
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        updateToolbar()
+    }
+
+    /// The toolbar shows when the page has something to put on it.
+    func updateToolbar() {
+        let hidden = topViewController?.toolbarItems?.isEmpty ?? true
+        guard isToolbarHidden != hidden else { return }
+        setToolbarHidden(hidden, animated: false)
+        view.layoutIfNeeded()
+        bars.forEach { $0.alpha = controller?.barsAlpha ?? 0 }
+    }
+
+    /// The navigation bar and the toolbar, however the system draws them: everything but the page.
+    var bars: [UIView] {
+        guard let page = topViewController?.viewIfLoaded else { return [] }
+        return view.subviews.filter { !page.isDescendant(of: $0) }
+    }
+
+    override func accessibilityPerformEscape() -> Bool {
+        controller?.dismiss()
+        return true
     }
 
     #if !os(visionOS)
-    override var preferredStatusBarStyle: UIStatusBarStyle { controller.statusBarStyle }
-    override var prefersStatusBarHidden: Bool { controller.statusBarHidden }
+    override var childForStatusBarStyle: UIViewController? { nil }
+    override var childForStatusBarHidden: UIViewController? { nil }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
+    override var preferredStatusBarStyle: UIStatusBarStyle { controller?.statusBarStyle ?? .lightContent }
+    override var prefersStatusBarHidden: Bool { controller?.statusBarHidden ?? false }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-    override var prefersHomeIndicatorAutoHidden: Bool { controller.hidesHomeIndicator }
+    override var prefersHomeIndicatorAutoHidden: Bool { controller?.hidesHomeIndicator ?? false }
     #endif
 
     override var canBecomeFirstResponder: Bool { true }
@@ -762,7 +808,30 @@ private final class PreviewRootViewController: UIViewController {
         }
     }
 
-    @objc private func key(_ command: UIKeyCommand) { controller.handleKey(command) }
+    @objc private func key(_ command: UIKeyCommand) { controller?.handleKey(command) }
+}
+
+/// Presents the viewer over everything, leaving what is underneath in place.
+private final class PreviewTransitioning: NSObject, UIViewControllerTransitioningDelegate {
+    private(set) weak var presentation: PreviewPresentationController?
+
+    func presentationController(forPresented presented: UIViewController, presenting: UIViewController?, source: UIViewController) -> UIPresentationController? {
+        let presentation = PreviewPresentationController(presentedViewController: presented, presenting: presenting)
+        self.presentation = presentation
+        return presentation
+    }
+}
+
+private final class PreviewPresentationController: UIPresentationController {
+    /// Closing: touches go to what is underneath, which can be scrolled while the image flies home.
+    var passesTouches = false {
+        didSet { containerView?.isUserInteractionEnabled = !passesTouches }
+    }
+
+    override func containerViewWillLayoutSubviews() {
+        super.containerViewWillLayoutSubviews()
+        presentedView?.frame = frameOfPresentedViewInContainerView
+    }
 }
 
 /// Swipes between the images.
@@ -802,39 +871,24 @@ private final class HeroView: UIView {
     }
 }
 
-/// Lets touches through wherever the accessories draw nothing, so the images underneath can be
-/// swiped, pinched and dragged around the buttons. A SwiftUI hosting view claims every touch
-/// inside it; where it is the view hit, what is drawn near the touch decides.
-final class PassthroughView: UIView {
-    weak var transparent: UIView?
-
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        guard alpha > 0.01 else { return nil }
-        let hit = super.hitTest(point, with: event)
-        if hit === self { return nil }
-        if let transparent, hit === transparent, !transparent.drawsSomething(near: convert(point, to: transparent)) { return nil }
-        return hit
+extension UIScrollView {
+    /// No blur or dimming where the bars cover the content: the images go under the bars as they are.
+    func hidesEdgeEffects() {
+        if #available(iOS 26.0, visionOS 26.0, *) {
+            for effect in [topEdgeEffect, bottomEdgeEffect, leftEdgeEffect, rightEdgeEffect] { effect.isHidden = true }
+        }
     }
 }
 
 extension UIView {
-    /// Whether anything visible is drawn within a fingertip of `point`.
-    func drawsSomething(near point: CGPoint, radius: CGFloat = 10) -> Bool {
-        let side = Int(radius * 2)
-        var pixels = [UInt8](repeating: 0, count: side * side * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
-            context.translateBy(x: 0, y: CGFloat(side))
-            context.scaleBy(x: 1, y: -1)
-            context.translateBy(x: radius - point.x, y: radius - point.y)
-            layer.render(in: context)
-            return true
+    /// The view controller this view belongs to.
+    var closestViewController: UIViewController? {
+        var responder = next
+        while let current = responder {
+            if let controller = current as? UIViewController { return controller }
+            responder = current.next
         }
-        guard drawn else { return false }
-        return stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 8 }
+        return nil
     }
 }
 #endif

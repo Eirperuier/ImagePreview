@@ -57,6 +57,22 @@ struct PostView: View {
         .padding(16)
         .imagePreview(selection: $opened, items: post.photos, configuration: .example) { photo in
             photo.image
+        } page: { page in
+            #if os(iOS)
+            let photo = post.photos[page.context.index]
+            page.navigationTitle(post.author)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .bottomBar) {
+                        if let thumbnail = photo.thumbnail {
+                            let image = Image(platform: thumbnail)
+                            ShareLink(item: image, preview: SharePreview(post.text, image: image))
+                        }
+                    }
+                }
+            #else
+            page
+            #endif
         }
     }
 }

@@ -6,6 +6,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 - **Follows your finger.** Drag an image up or down, or sideways past the first or last image: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
+- **A real page.** On iOS the viewer is a view controller presented in a navigation controller of its own, with the system's navigation bar and toolbar over the images: put a `.toolbar` on it as on any SwiftUI page.
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
@@ -13,7 +14,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 | Move between images | swipe | two-finger swipe, drag, ← → |
 | Zoom | pinch, double-tap | pinch, double-click |
 | Close | drag up or down, or sideways past the first or last image; close button | the same with two fingers or the mouse; click outside the image, Esc, Space |
-| Accessories | tap to hide and show | click the image to hide and show |
+| Bars and controls | tap to hide and show | click the image to hide and show |
 
 ## Installation
 
@@ -57,28 +58,24 @@ struct Gallery: View {
 
 `selection` follows the viewer: swiping changes it, closing sets it to `nil`, and setting it to `nil` closes the viewer.
 
-### Accessories
+### The page
 
-By default the viewer draws a close button and, for several images, a page indicator. Draw your own instead; `ImagePreviewContext` gives the index, the count, `dismiss()` and `select(_:)`:
+On iOS, iPadOS, Mac Catalyst and visionOS the viewer is a page in its own navigation controller. It has the system close button on the navigation bar and, for several images, where you are as the title. Dress the page yourself with the `page` closure: its `.toolbar` and `.navigationTitle` go on the system bars, which a tap hides and shows and a drag fades. `page.context` gives the index, the count, `dismiss()` and `select(_:)`:
 
 ```swift
 .imagePreview(selection: $opened, items: photos) { photo in
     PreviewImage(url: photo.url, placeholder: photo.thumbnail)
-} accessories: { context in
-    VStack {
-        HStack {
-            ImagePreviewCloseButton(context: context)
-            Spacer()
-            ShareLink(item: photos[context.index].url)
+} page: { page in
+    page.navigationTitle(photos[page.context.index].title)
+        .toolbar {
+            ToolbarItem(placement: .bottomBar) {
+                ShareLink(item: photos[page.context.index].url)
+            }
         }
-        Spacer()
-        Text(photos[context.index].caption).foregroundStyle(.white)
-    }
-    .padding()
 }
 ```
 
-The accessories cover the screen; a touch that lands where they draw nothing reaches the image underneath, so swiping and dragging work around them.
+On macOS the viewer lays itself over the window's content; the page there is a close button and a page indicator drawn over the images, to which you can add overlays.
 
 ## UIKit and AppKit
 
@@ -98,7 +95,7 @@ preview.present(from: view)
 
 The source closure is asked again when the viewer closes, so after scrolling the collection view to the image on screen, the image lands in the right cell. If there is no thumbnail on screen, the image fades out where it is.
 
-Set `accessoryView` (or `setAccessories(_:)` with a SwiftUI view) for your own controls.
+On iOS, put buttons on the bars through `preview.page.navigationItem` and `preview.page.toolbarItems`, or build the page in SwiftUI with `setPage(_:)` before presenting. On macOS, set `accessoryView` (or `setAccessories(_:)` with a SwiftUI view).
 
 ## Images
 
@@ -119,7 +116,7 @@ configuration.pageSpacing = 16
 configuration.maximumZoomScale = 4
 configuration.transitionSpring = PreviewSpring(response: 0.36, dampingRatio: 1)
 configuration.restoreSpring = PreviewSpring(response: 0.32, dampingRatio: 0.86)
-configuration.tapTogglesAccessories = true   // false: a tap closes the viewer
+configuration.tapTogglesAccessories = true   // the bars; false: a tap closes the viewer
 ```
 
 With Reduce Motion on, the viewer fades in and out in place instead of flying.
