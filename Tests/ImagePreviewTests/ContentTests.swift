@@ -15,12 +15,12 @@ import AppKit
     let placeholder = image(width: 30, height: 20)
     let full = image(width: 300, height: 200)
     let content = ImageContent(PreviewImage(placeholder: placeholder) { full })
-    #expect(content.still === placeholder)
+    #expect(content.still() === placeholder)
 
     await withCheckedContinuation { done in
         content.load { done.resume() }
     }
-    #expect(content.still?.size == CGSize(width: 300, height: 200))
+    #expect(content.still()?.size == CGSize(width: 300, height: 200))
 }
 
 @MainActor @Test func anImageAtAURLHasNoStillUntilItIsDecoded() async throws {
@@ -29,13 +29,13 @@ import AppKit
     defer { try? FileManager.default.removeItem(at: url) }
 
     let content = ImageContent(PreviewImage(url: url))
-    #expect(content.still == nil)
+    #expect(content.still() == nil)
     await withCheckedContinuation { done in
         content.load { done.resume() }
     }
-    #expect(content.still?.size == CGSize(width: 3, height: 2))
+    #expect(content.still()?.size == CGSize(width: 3, height: 2))
     // Decoded once: the next viewer has it at once.
-    #expect(ImageContent(PreviewImage(url: url)).still != nil)
+    #expect(ImageContent(PreviewImage(url: url)).still() != nil)
 }
 
 @MainActor @Test func aVideoShowsItsPosterUntilItsFirstFrameIsIn() async throws {
@@ -43,12 +43,12 @@ import AppKit
     defer { try? FileManager.default.removeItem(at: url) }
     let poster = image(width: 8, height: 6)
     let content = VideoContent(PreviewVideo(url: url, poster: poster))
-    #expect(content.still === poster)
+    #expect(content.still() === poster)
 
     await withCheckedContinuation { done in
         content.load { done.resume() }
     }
-    #expect(content.still?.size == CGSize(width: 64, height: 48))
+    #expect(content.still()?.size == CGSize(width: 64, height: 48))
 }
 
 /// A short H.264 movie of solid frames.

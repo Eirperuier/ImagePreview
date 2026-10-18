@@ -4,38 +4,85 @@ import UIKit
 import AppKit
 #endif
 
-/// What one page of the viewer shows.
+/// What one page of the viewer shows, for content of your own; ``PreviewImage`` and
+/// ``PreviewVideo`` are built on it.
 ///
-/// The viewer flies a still picture of the content as it opens and closes and while a page is
-/// dragged. In between, the page shows the still, fitted, zoomed and moved with the page, and over
-/// it the content's own view if it has one. The still's size is the content's shape.
+/// The viewer moves the content: it flies it out of its thumbnail and back, follows a drag that
+/// closes it, pages it and zooms it. What it moves is the content's still, a picture of it, with
+/// the content's own view over the still if it has one, laid out at the still's size and zoomed and
+/// clipped with it: a video can play as it flies. The still's size is the content's shape.
+///
+/// ```swift
+/// final class FeedVideo: PreviewContent {
+///     let player: FeedPlayer
+///     func still() -> UIImage? { player.currentFrame ?? player.poster }
+///     func makeView(for place: PreviewContentPlace) -> UIView? { PlayerView(player.avPlayer) }
+///     func setState(_ state: PreviewContentState) {
+///         if state == .offScreen { player.pause() } else { player.play() }
+///     }
+/// }
+///
+/// .imagePreview(selection: $opened, items: items) { item in
+///     PreviewMedia.content(FeedVideo(player: item.player))
+/// }
+/// ```
+///
+/// The viewer asks for an item's content when its page is about to be shown, once while it is open.
 @MainActor
-protocol PreviewContent: AnyObject {
-    /// The best picture of the content there is now; nil before there is any.
-    var still: PreviewPlatformImage? { get }
-    /// Starts getting what the content shows, calling `changed` when the still is better.
+public protocol PreviewContent: AnyObject {
+    /// A picture of the content as it is now; nil before there is any, when the viewer draws a
+    /// picture of the thumbnail instead. Asked when a page is built, when the content flies off
+    /// its page, and after `changed`.
+    func still() -> PreviewPlatformImage?
+    /// Starts getting what the content shows; call `changed` when there is a better still (the
+    /// full image, a video's first frame). Called once, when the content is first wanted.
     func load(changed: @escaping @MainActor () -> Void)
-    /// Stops loading: the viewer has closed.
+    /// The viewer has closed: stop loading.
     func cancel()
-    /// A view laid over the still at its size and zoomed with it, showing the content live (a
-    /// video playing); nil when the still is all there is. Asked each time a page is built.
-    func makeView() -> PreviewPlatformView?
-    /// Whether the content is the one on screen, the viewer open and still: a video plays only then.
-    func setActive(_ active: Bool)
+    /// A view showing the content live over its still, or nil to show the still alone there.
+    /// Asked for each page built and each flight; the viewer sizes, zooms and clips it, and
+    /// removes it when it is done with it. It takes no clicks or touches.
+    func makeView(for place: PreviewContentPlace) -> PreviewPlatformView?
+    /// Where the content is now: the viewer calls this when it changes. A video plays when it is
+    /// ``PreviewContentState/onScreen`` or ``PreviewContentState/moving`` and pauses when it is
+    /// ``PreviewContentState/offScreen``.
+    func setState(_ state: PreviewContentState)
 }
 
 extension PreviewContent {
-    func makeView() -> PreviewPlatformView? { nil }
-    func setActive(_ active: Bool) {}
+    public func load(changed: @escaping @MainActor () -> Void) {}
+    public func cancel() {}
+    public func makeView(for place: PreviewContentPlace) -> PreviewPlatformView? { nil }
+    public func setState(_ state: PreviewContentState) {}
 }
 
-/// What one page shows: an image or a video. ``PreviewImage`` and ``PreviewVideo`` are media
-/// themselves; return `PreviewMedia` where an item can be either.
+/// Where a content's view goes.
+public enum PreviewContentPlace: Sendable {
+    /// On its page, fitted to the screen and zoomed with it.
+    case page
+    /// Flying out of the thumbnail or back into it, or dragged: resized every frame.
+    case flight
+}
+
+/// Where a content is.
+public enum PreviewContentState: Sendable {
+    /// Not on screen: another page is, or the viewer has closed.
+    case offScreen
+    /// On its page, the viewer open and nothing moving it.
+    case onScreen
+    /// Flying in or out, or being dragged.
+    case moving
+}
+
+/// What one page shows: an image, a video, or content of your own. ``PreviewImage`` and
+/// ``PreviewVideo`` are media themselves; return `PreviewMedia` where an item can be either.
 public struct PreviewMedia: PreviewMediaConvertible {
-    let makeContent: @MainActor () -> PreviewContent
+    let makeContent: @MainActor () -> any PreviewContent
 
     public static func image(_ image: PreviewImage) -> PreviewMedia { PreviewMedia { ImageContent(image) } }
     public static func video(_ video: PreviewVideo) -> PreviewMedia { PreviewMedia { VideoContent(video) } }
+    /// Content of your own.
+    @MainActor public static func content(_ content: any PreviewContent) -> PreviewMedia { PreviewMedia { content } }
 
     public var previewMedia: PreviewMedia { self }
 }
@@ -57,7 +104,7 @@ final class ImageContent: PreviewContent {
 
     init(_ image: PreviewImage) { self.image = image }
 
-    var still: PreviewPlatformImage? { loaded ?? image.immediate }
+    func still() -> PreviewPlatformImage? { loaded ?? image.immediate }
 
     func load(changed: @escaping @MainActor () -> Void) {
         guard task == nil, loaded == nil else { return }

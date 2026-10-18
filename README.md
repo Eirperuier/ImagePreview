@@ -7,7 +7,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
 - **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar while the images cover it, in the window's own style (a compact title bar stays compact).
-- **Videos too.** A video opens out of its thumbnail and plays; it closes into it from the frame it was on.
+- **Videos too, and your own content.** A video plays as it opens out of its thumbnail and as it flies home; anything else that can draw itself can be a page.
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
@@ -122,7 +122,7 @@ Pass the thumbnail you already have as the `placeholder`: the transition starts 
 
 ## Videos
 
-`PreviewVideo(url:poster:)` is a video, a file or a remote URL AVFoundation can play. It flies in and out like an image: from its `poster` (the thumbnail), or its first frame, and when it has played, the frame on screen goes home. It plays while it is the page on screen and the viewer is open, from the start again when it ends, and pauses when you move to another page, drag it or close the viewer.
+`PreviewVideo(url:poster:)` is a video, a file or a remote URL AVFoundation can play. It flies in and out of its thumbnail playing, starting from its `poster` (the thumbnail) or its first frame. It plays while it is on screen, flying and dragged too, from the start again when it ends, and pauses when you move to another page or it has closed.
 
 Return `PreviewMedia` where an item can be an image or a video:
 
@@ -135,6 +135,34 @@ Return `PreviewMedia` where an item can be an image or a video:
 ```
 
 There are no playback controls yet.
+
+## Your own content
+
+Anything else, or a video played your own way, is a `PreviewContent`: the viewer flies, drags, pages and zooms it, and the content says what is shown.
+
+- `still()`: a picture of the content as it is now. It flies when there is nothing better, and its size is the content's shape.
+- `makeView(for:)`: a view over the still, laid out at its size, zoomed and clipped with it, on the page and in flight; or nil for the still alone (a web page you would rather not resize every frame flies as its still).
+- `setState(_:)`: `.onScreen`, `.moving` (flying or dragged) or `.offScreen`, as it changes.
+- `load(changed:)` and `cancel()`: get a better still, and stop when the viewer closes.
+
+For a video that keeps playing in your feed, give the viewer the feed's player: the page and the flight show the same frames as the thumbnail, and it lands on the frame the thumbnail is showing.
+
+```swift
+final class FeedVideo: PreviewContent {
+    let item: FeedItem
+    init(_ item: FeedItem) { self.item = item }
+
+    func still() -> UIImage? { item.player.currentFrame ?? item.poster }
+    func makeView(for place: PreviewContentPlace) -> UIView? { PlayerView(item.player) }
+    func setState(_ state: PreviewContentState) {
+        if state == .offScreen { item.player.pause() } else { item.player.play() }
+    }
+}
+
+.imagePreview(selection: $opened, items: items) { item in
+    PreviewMedia.content(FeedVideo(item))
+}
+```
 
 ## Configuration
 

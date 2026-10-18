@@ -35,7 +35,7 @@ final class VideoContent: PreviewContent {
     /// How the video's frames are turned to be upright.
     private var orientation: CGImagePropertyOrientation = .up
     private var task: Task<Void, Never>?
-    private var isActive = false
+    private var state = PreviewContentState.offScreen
     private var hasPlayed = false
     nonisolated(unsafe) private var ended: NSObjectProtocol?
 
@@ -56,7 +56,7 @@ final class VideoContent: PreviewContent {
         if let ended { NotificationCenter.default.removeObserver(ended) }
     }
 
-    var still: PreviewPlatformImage? {
+    func still() -> PreviewPlatformImage? {
         if hasPlayed, let now = currentFrame() { frame = now }
         return frame ?? video.poster
     }
@@ -75,27 +75,30 @@ final class VideoContent: PreviewContent {
 
     func cancel() {
         task?.cancel()
-        isActive = false
-        player.pause()
+        setState(.offScreen)
     }
 
-    func makeView() -> PreviewPlatformView? { PreviewPlayerView(player: player) }
+    func makeView(for place: PreviewContentPlace) -> PreviewPlatformView? { PreviewPlayerView(player: player) }
 
-    func setActive(_ active: Bool) {
-        guard active != isActive else { return }
-        isActive = active
-        if active {
+    /// Plays on screen and as it moves, as the video in a feed keeps playing as it opens.
+    func setState(_ state: PreviewContentState) {
+        let wasPlaying = self.state != .offScreen
+        self.state = state
+        switch (wasPlaying, state != .offScreen) {
+        case (false, true):
             hasPlayed = true
             player.play()
-        } else {
+        case (true, false):
             if let now = currentFrame() { frame = now }
             player.pause()
+        default:
+            break
         }
     }
 
     private func playFromStart() {
         player.seek(to: .zero)
-        if isActive { player.play() }
+        if state != .offScreen { player.play() }
     }
 
     /// The frame the player is showing, upright.
@@ -163,16 +166,23 @@ final class PreviewPlayerView: UIView {
 }
 #else
 final class PreviewPlayerView: NSView {
+    private let player: AVPlayer
+
     init(player: AVPlayer) {
+        self.player = player
         super.init(frame: .zero)
-        let layer = AVPlayerLayer(player: player)
-        layer.videoGravity = .resizeAspect
-        self.layer = layer
         wantsLayer = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    // A layer the view backs, not one it hosts, so AppKit moves it with the view, without animating.
+    override func makeBackingLayer() -> CALayer {
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = .resizeAspect
+        return layer
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

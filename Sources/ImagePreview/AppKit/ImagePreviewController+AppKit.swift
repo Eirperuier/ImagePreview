@@ -46,7 +46,7 @@ public final class ImagePreviewController {
     var isClosing: Bool { phase == .closing || phase == .closed }
 
     private let count: Int
-    private let contentProvider: (Int) -> PreviewContent
+    private let contentProvider: (Int) -> any PreviewContent
     private let sourceProvider: (Int) -> PreviewSource?
 
     public init<Media: PreviewMediaConvertible>(
@@ -115,10 +115,10 @@ public final class ImagePreviewController {
     private static var retained: [ObjectIdentifier: ImagePreviewController] = [:]
 
     private var phase: Phase = .closed {
-        didSet { updateActive() }
+        didSet { updateContentState() }
     }
-    /// The content playing, if any: the one on screen while the viewer is presented.
-    private var activeIndex: Int?
+    /// The content on screen, if any, and where it is; the others are off screen.
+    private var shownContent: (index: Int, state: PreviewContentState)?
     private weak var previousResponder: NSResponder?
     /// The backdrop, the images and the image in flight, and what takes the clicks, swipes and keys.
     lazy var stage: NSView = OverlayView(controller: self)
@@ -131,7 +131,7 @@ public final class ImagePreviewController {
     private let hero = HeroView()
     private var pages: [Int: PageView] = [:]
 
-    private var contents: [Int: PreviewContent] = [:]
+    private var contents: [Int: any PreviewContent] = [:]
     /// Pictures of thumbnails as they are on screen, for contents with no still yet.
     private var fallbacks: [Int: NSImage] = [:]
 
@@ -319,7 +319,7 @@ public final class ImagePreviewController {
     // MARK: Contents
 
     /// The content at an index, loading from the first time it is wanted.
-    private func content(_ i: Int) -> PreviewContent {
+    private func content(_ i: Int) -> any PreviewContent {
         if let content = contents[i] { return content }
         let content = contentProvider(i)
         contents[i] = content
@@ -327,17 +327,22 @@ public final class ImagePreviewController {
         return content
     }
 
-    private func updateActive() {
-        let active = phase == .presented ? index : nil
-        guard active != activeIndex else { return }
-        if let activeIndex { contents[activeIndex]?.setActive(false) }
-        if let active { content(active).setActive(true) }
-        activeIndex = active
+    private func updateContentState() {
+        let state: PreviewContentState
+        switch phase {
+        case .presented: state = .onScreen
+        case .opening, .dragging, .restoring, .closing: state = .moving
+        case .closed: state = .offScreen
+        }
+        let now = state == .offScreen ? nil : (index: index, state: state)
+        if let shown = shownContent, shown.index != now?.index { contents[shown.index]?.setState(.offScreen) }
+        if let now, shownContent?.index != now.index || shownContent?.state != now.state { content(now.index).setState(now.state) }
+        shownContent = now
     }
 
     /// The best picture to draw for an index right now.
     private func currentImage(_ i: Int) -> NSImage? {
-        content(i).still ?? fallbacks[i]
+        content(i).still() ?? fallbacks[i]
     }
 
     private func didLoad(at i: Int) {
@@ -367,7 +372,7 @@ public final class ImagePreviewController {
             pages[i] = page
             page.frame = pageFrame(i)
             page.setImage(currentImage(i), fade: false)
-            page.setLiveView(content(i).makeView())
+            page.setLiveView(content(i).makeView(for: .page))
         }
         for (i, page) in pages {
             let frame = pageFrame(i)
@@ -390,7 +395,7 @@ public final class ImagePreviewController {
     private func setIndex(_ i: Int) {
         guard i != context.index else { return }
         context.index = i
-        updateActive()
+        updateContentState()
         if phase != .closed, phase != .closing { hideSource() }
         onIndexChange?(i)
     }
@@ -443,7 +448,7 @@ public final class ImagePreviewController {
 
     private func sourceState(_ source: PreviewSource?, at frame: CGRect? = nil) -> HeroState? {
         guard let source, let frame = frame ?? visibleFrame(of: source), let size = hero.image?.size else { return nil }
-        let mode = fallbacks[index] != nil && contents[index]?.still == nil ? PreviewContentMode.fit : source.contentMode
+        let mode = hero.image != nil && hero.image === fallbacks[index] ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
     }
 
@@ -464,8 +469,7 @@ public final class ImagePreviewController {
         let source = sourceProvider(index)
         if currentImage(index) == nil, let snap = snapshot(source) { fallbacks[index] = snap }
         layoutPages()
-        hero.setImage(currentImage(index), fade: false)
-        hero.isHidden = false
+        showHero(currentImage(index))
         phase = .opening
         hideSource()
         setHero((reduceMotion ? nil : sourceState(source)) ?? .vanished(from: fittedFrame))
@@ -478,15 +482,26 @@ public final class ImagePreviewController {
         phase = .presented
         currentPage?.setImage(currentImage(index), fade: false)
         pager.isHidden = false
-        hero.isHidden = true
+        hideHero()
         takeWindow()
+    }
+
+    /// Shows the content on screen in the hero: the still, and the content's view over it.
+    private func showHero(_ still: NSImage?) {
+        hero.setImage(still, fade: false)
+        hero.setLiveView(content(index).makeView(for: .flight))
+        hero.isHidden = false
+    }
+
+    private func hideHero() {
+        hero.isHidden = true
+        hero.setLiveView(nil)
     }
 
     private func liftHero() {
         guard let overlay, let page = currentPage else { return }
         let image = page.imageFrame(in: overlay)
-        hero.setImage(currentImage(index) ?? page.image, fade: false)
-        hero.isHidden = false
+        showHero(currentImage(index) ?? page.image)
         setHero(HeroState(image: image, clip: image.intersection(overlay.bounds), cornerRadius: 0, backdrop: 1))
         pager.isHidden = true
     }
@@ -543,6 +558,7 @@ public final class ImagePreviewController {
 
     private func finish() {
         handoff = nil
+        hideHero()
         closingSource = nil
         ticker?.stop()
         giveWindowBack()
@@ -932,12 +948,15 @@ public final class ImagePreviewController {
         var image: NSImage? { imageView.image }
         var isZoomed: Bool { magnification > minMagnification + 0.01 }
 
-        /// The content's view, over the still.
+        /// The content's view, over the still; clicks go past it, to the viewer.
         func setLiveView(_ view: NSView?) {
             guard let view else { return }
-            view.frame = imageView.bounds
+            let container = ClickThroughView(frame: imageView.bounds)
+            container.autoresizingMask = [.width, .height]
+            view.frame = container.bounds
             view.autoresizingMask = [.width, .height]
-            imageView.addSubview(view)
+            container.addSubview(view)
+            imageView.addSubview(container)
         }
 
         func setImage(_ image: NSImage?, fade: Bool) {
@@ -1026,6 +1045,18 @@ public final class ImagePreviewController {
 
         func setImage(_ image: NSImage?, fade: Bool) { imageView.setImage(image, fade: fade) }
 
+        private var liveView: NSView?
+
+        /// The content's view, over the still.
+        func setLiveView(_ view: NSView?) {
+            liveView?.removeFromSuperview()
+            liveView = view
+            guard let view else { return }
+            view.frame = imageView.bounds
+            view.autoresizingMask = [.width, .height]
+            imageView.addSubview(view)
+        }
+
         func apply(_ state: HeroState) {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -1103,6 +1134,11 @@ final class LayerImageView: NSView {
 
 class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+/// Holds a view that is only to be seen.
+private final class ClickThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The velocity of a drag, from its last few movements.
