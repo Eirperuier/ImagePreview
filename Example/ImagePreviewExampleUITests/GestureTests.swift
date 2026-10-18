@@ -55,7 +55,7 @@ final class GestureTests: XCTestCase {
     @MainActor
     func testScrollingWhileAnImageFliesHome() throws {
         let app = XCUIApplication()
-        app.launchEnvironment["LOUPE_TRANSITION_RESPONSE"] = "1.6"
+        app.launchEnvironment["PREVIEW_TRANSITION_RESPONSE"] = "1.6"
         app.launch()
         let image = app.images.element(boundBy: 2)
         XCTAssertTrue(image.waitForExistence(timeout: 15))

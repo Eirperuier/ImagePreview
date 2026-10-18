@@ -1,6 +1,6 @@
 import CoreGraphics
 import Testing
-@testable import Loupe
+@testable import ImagePreview
 
 @Test func fillCropsAndFitLetterboxes() {
     let frame = CGRect(x: 10, y: 20, width: 100, height: 100)

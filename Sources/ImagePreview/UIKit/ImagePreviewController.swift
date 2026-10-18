@@ -8,18 +8,18 @@ import UIKit
 /// let go and it flies back into its thumbnail, or springs back if the drag was not far or fast enough.
 ///
 /// ```swift
-/// let loupe = LoupeController(count: photos.count, index: tapped) { i in
-///     LoupeImage(url: photos[i].url, placeholder: cells[i].imageView.image)
+/// let preview = ImagePreviewController(count: photos.count, index: tapped) { i in
+///     PreviewImage(url: photos[i].url, placeholder: cells[i].imageView.image)
 /// } source: { i in
-///     LoupeSource(view: cells[i].imageView, cornerRadius: 8)
+///     PreviewSource(view: cells[i].imageView, cornerRadius: 8)
 /// }
-/// loupe.present(from: view)
+/// preview.present(from: view)
 /// ```
 @MainActor
-public final class LoupeController {
+public final class ImagePreviewController {
     /// What the accessories can read (the index, whether they are showing) and do.
-    public let context: LoupeContext
-    public var configuration: LoupeConfiguration
+    public let context: ImagePreviewContext
+    public var configuration: ImagePreviewConfiguration
     /// The image on screen changed (a swipe, or `select`).
     public var onIndexChange: ((Int) -> Void)?
     /// The viewer started closing.
@@ -44,8 +44,8 @@ public final class LoupeController {
     var isClosing: Bool { phase == .closing || phase == .closed }
 
     private let count: Int
-    private let imageProvider: (Int) -> LoupeImage
-    private let sourceProvider: (Int) -> LoupeSource?
+    private let imageProvider: (Int) -> PreviewImage
+    private let sourceProvider: (Int) -> PreviewSource?
 
     /// - Parameters:
     ///   - count: How many images there are.
@@ -55,12 +55,12 @@ public final class LoupeController {
     public init(
         count: Int,
         index: Int = 0,
-        configuration: LoupeConfiguration = .init(),
-        image: @escaping (Int) -> LoupeImage,
-        source: @escaping (Int) -> LoupeSource? = { _ in nil }
+        configuration: ImagePreviewConfiguration = .init(),
+        image: @escaping (Int) -> PreviewImage,
+        source: @escaping (Int) -> PreviewSource? = { _ in nil }
     ) {
         self.count = max(count, 0)
-        self.context = LoupeContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
+        self.context = ImagePreviewContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
         self.configuration = configuration
         self.imageProvider = image
         self.sourceProvider = source
@@ -79,7 +79,7 @@ public final class LoupeController {
         let window = UIWindow(windowScene: scene)
         window.windowLevel = UIWindow.Level(rawValue: (view.window?.windowLevel.rawValue ?? UIWindow.Level.normal.rawValue) + 1)
         window.backgroundColor = .clear
-        let root = LoupeRootViewController(controller: self)
+        let root = PreviewRootViewController(controller: self)
         window.rootViewController = root
         previousKeyWindow = scene.keyWindow
         self.window = window
@@ -110,22 +110,22 @@ public final class LoupeController {
     private enum Phase { case opening, presented, dragging, restoring, closing, closed }
 
     /// Viewers on screen keep themselves alive until they have closed.
-    private static var retained: [ObjectIdentifier: LoupeController] = [:]
+    private static var retained: [ObjectIdentifier: ImagePreviewController] = [:]
 
     private var phase: Phase = .closed
     private var window: UIWindow?
     private weak var previousKeyWindow: UIWindow?
-    private weak var root: LoupeRootViewController?
+    private weak var root: PreviewRootViewController?
     private var isLoaded: Bool { root?.isViewLoaded == true }
 
     private let backdrop = UIView()
-    private let pager = LoupePagerView()
+    private let pager = PreviewPagerView()
     private let hero = HeroView()
     private let accessoryContainer = PassthroughView()
-    private var pages: [Int: LoupePageView] = [:]
+    private var pages: [Int: PreviewPageView] = [:]
     private var isLayingOut = false
 
-    private var images: [Int: LoupeImage] = [:]
+    private var images: [Int: PreviewImage] = [:]
     private var loaded: [Int: UIImage] = [:]
     private var fallbacks: [Int: UIImage] = [:]
     private var loads: [Int: Task<Void, Never>] = [:]
@@ -137,8 +137,8 @@ public final class LoupeController {
 
     private var drag: DismissDrag?
     private var dragAxis: DismissDrag.Axis = .vertical
-    private var hiddenSource: LoupeSource?
-    private var closingSource: LoupeSource?
+    private var hiddenSource: PreviewSource?
+    private var closingSource: PreviewSource?
     private var landing: Landing?
 
     private lazy var gestureTarget = GestureTarget(self)
@@ -149,7 +149,7 @@ public final class LoupeController {
 
     // MARK: Building
 
-    fileprivate func load(into root: LoupeRootViewController) {
+    fileprivate func load(into root: PreviewRootViewController) {
         self.root = root
         let view: UIView = root.view
         view.backgroundColor = .clear
@@ -226,7 +226,7 @@ public final class LoupeController {
 
     // MARK: Images
 
-    private func image(_ i: Int) -> LoupeImage {
+    private func image(_ i: Int) -> PreviewImage {
         if let image = images[i] { return image }
         let image = imageProvider(i)
         images[i] = image
@@ -243,14 +243,14 @@ public final class LoupeController {
     private func startLoading(_ i: Int) {
         guard loads[i] == nil, loaded[i] == nil else { return }
         let source = image(i)
-        if let key = source.key, let cached = LoupeImageLoader.cached(key) {
+        if let key = source.key, let cached = PreviewImageLoader.cached(key) {
             loaded[i] = cached
             return
         }
         guard let load = source.load else { return }
         loads[i] = Task { [weak self] in
             guard let image = try? await load() else { return }
-            let ready = source.key == nil ? await LoupeImageLoader.prepared(image) : image
+            let ready = source.key == nil ? await PreviewImageLoader.prepared(image) : image
             self?.didLoad(ready, at: i)
         }
     }
@@ -273,7 +273,7 @@ public final class LoupeController {
         let fade = CATransition()
         fade.type = .fade
         fade.duration = 0.2
-        view.layer.add(fade, forKey: "loupe.fade")
+        view.layer.add(fade, forKey: "preview.fade")
     }
 
     // MARK: Pages
@@ -288,7 +288,7 @@ public final class LoupeController {
             pages[i] = nil
         }
         for i in wanted where pages[i] == nil {
-            let page = LoupePageView(frame: pageFrame(i))
+            let page = PreviewPageView(frame: pageFrame(i))
             page.maximumZoomFactor = configuration.maximumZoomScale
             page.setImage(currentImage(i))
             pager.addSubview(page)
@@ -312,7 +312,7 @@ public final class LoupeController {
         onIndexChange?(i)
     }
 
-    private var currentPage: LoupePageView? { pages[index] }
+    private var currentPage: PreviewPageView? { pages[index] }
 
     // MARK: Sources
 
@@ -324,20 +324,20 @@ public final class LoupeController {
     }
 
     /// The thumbnail's frame in the viewer, if it is on screen.
-    private func visibleFrame(of source: LoupeSource?) -> CGRect? {
+    private func visibleFrame(of source: PreviewSource?) -> CGRect? {
         guard let frame = frame(of: source), let root = root?.view, frame.intersects(root.bounds) else { return nil }
         return frame
     }
 
     /// The thumbnail's frame in the viewer, on screen or not, while it is in a window.
-    private func frame(of source: LoupeSource?) -> CGRect? {
+    private func frame(of source: PreviewSource?) -> CGRect? {
         guard let view = source?.view, view.window != nil, let root = root?.view else { return nil }
         let frame = view.convert(view.bounds, to: root)
         return frame.width > 1 && frame.height > 1 ? frame : nil
     }
 
     /// A picture of the thumbnail as it is on screen, for when there is no image to fly yet.
-    private func snapshot(_ source: LoupeSource?) -> UIImage? {
+    private func snapshot(_ source: PreviewSource?) -> UIImage? {
         guard let view = source?.view, let window = view.window else { return nil }
         let rect = view.convert(view.bounds, to: window)
         guard rect.width > 1, rect.height > 1 else { return nil }
@@ -418,15 +418,15 @@ public final class LoupeController {
         }
     }
 
-    private func closedTarget(_ source: LoupeSource?) -> HeroState {
+    private func closedTarget(_ source: PreviewSource?) -> HeroState {
         (UIAccessibility.isReduceMotionEnabled ? nil : sourceState(source)) ?? .vanished(from: heroState.image)
     }
 
     /// The image laid over its thumbnail as the thumbnail draws it, if the thumbnail is on screen.
-    private func sourceState(_ source: LoupeSource?) -> HeroState? {
+    private func sourceState(_ source: PreviewSource?) -> HeroState? {
         guard let source, let frame = visibleFrame(of: source), let size = hero.imageView.image?.size else { return nil }
         // A picture of the thumbnail already has its shape: it is drawn whole.
-        let mode = fallbacks[index] != nil && loaded[index] == nil ? LoupeContentMode.fit : source.contentMode
+        let mode = fallbacks[index] != nil && loaded[index] == nil ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
     }
 
@@ -550,7 +550,7 @@ public final class LoupeController {
         springs?.set(values: state.vector)
     }
 
-    private func animateHero(to target: HeroState, spring: LoupeSpring, velocity: CGPoint = .zero, completion: @escaping () -> Void) {
+    private func animateHero(to target: HeroState, spring: PreviewSpring, velocity: CGPoint = .zero, completion: @escaping () -> Void) {
         var springs = springs ?? SpringVector(values: heroState.vector, tolerances: HeroState.tolerances, spring: spring)
         if self.springs == nil || velocity != .zero {
             springs.set(values: heroState.vector, velocities: velocity == .zero ? nil : heroState.velocity(velocity, toward: target))
@@ -601,16 +601,16 @@ public final class LoupeController {
     // MARK: Gesture plumbing
 
     @MainActor private final class GestureTarget: NSObject {
-        weak var controller: LoupeController?
-        init(_ controller: LoupeController) { self.controller = controller }
+        weak var controller: ImagePreviewController?
+        init(_ controller: ImagePreviewController) { self.controller = controller }
         @objc func pan(_ g: UIPanGestureRecognizer) { controller?.handlePan(g) }
         @objc func tap(_ g: UITapGestureRecognizer) { controller?.handleTap(g) }
         @objc func doubleTap(_ g: UITapGestureRecognizer) { controller?.handleDoubleTap(g) }
     }
 
     @MainActor private final class GestureDelegate: NSObject, UIGestureRecognizerDelegate, UIScrollViewDelegate {
-        weak var controller: LoupeController?
-        init(_ controller: LoupeController) { self.controller = controller }
+        weak var controller: ImagePreviewController?
+        init(_ controller: ImagePreviewController) { self.controller = controller }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
             guard let controller, let pan = g as? UIPanGestureRecognizer, pan === controller.dismissPan else { return true }
@@ -630,10 +630,10 @@ public final class LoupeController {
 // MARK: - Views
 
 /// The window's root: lays the viewer out and speaks for it to the system (status bar, keys).
-private final class LoupeRootViewController: UIViewController {
-    private let controller: LoupeController
+private final class PreviewRootViewController: UIViewController {
+    private let controller: ImagePreviewController
 
-    init(controller: LoupeController) {
+    init(controller: ImagePreviewController) {
         self.controller = controller
         super.init(nibName: nil, bundle: nil)
     }
@@ -681,7 +681,7 @@ private final class LoupeRootViewController: UIViewController {
 }
 
 /// Swipes between the images.
-private final class LoupePagerView: UIScrollView {
+private final class PreviewPagerView: UIScrollView {
     var shouldBeginPan: (CGPoint) -> Bool = { _ in true }
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {

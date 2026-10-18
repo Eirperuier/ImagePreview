@@ -1,7 +1,7 @@
 import CoreGraphics
 
 /// How a thumbnail draws its image inside its frame, so the transition starts from exactly what was on screen.
-public enum LoupeContentMode: Sendable, Hashable {
+public enum PreviewContentMode: Sendable, Hashable {
     /// The image fills the frame and is cropped (SwiftUI `scaledToFill`, UIKit `.scaleAspectFill`).
     case fill
     /// The whole image is visible inside the frame (SwiftUI `scaledToFit`, UIKit `.scaleAspectFit`).
@@ -16,7 +16,7 @@ extension CGRect {
     var center: CGPoint { CGPoint(x: midX, y: midY) }
 
     /// The rect of an image of `size` placed in this rect with `mode`, centred.
-    func placing(_ size: CGSize, _ mode: LoupeContentMode) -> CGRect {
+    func placing(_ size: CGSize, _ mode: PreviewContentMode) -> CGRect {
         guard size.hasArea, width > 0, height > 0 else { return self }
         let sx = width / size.width, sy = height / size.height
         let scale = mode == .fill ? max(sx, sy) : min(sx, sy)
@@ -77,7 +77,7 @@ struct HeroState: Equatable {
     }
 
     /// The thumbnail's state: the image placed in the thumbnail's frame as the thumbnail draws it.
-    static func source(frame: CGRect, imageSize: CGSize, mode: LoupeContentMode, cornerRadius: CGFloat) -> HeroState {
+    static func source(frame: CGRect, imageSize: CGSize, mode: PreviewContentMode, cornerRadius: CGFloat) -> HeroState {
         let image = frame.placing(imageSize, mode)
         return HeroState(image: image, clip: mode == .fill ? frame : image, cornerRadius: cornerRadius, backdrop: 0)
     }

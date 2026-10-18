@@ -1,4 +1,4 @@
-import Loupe
+import ImagePreview
 import SwiftUI
 
 struct FeedView: View {
@@ -16,7 +16,7 @@ struct FeedView: View {
                 .frame(maxWidth: 640)
                 .frame(maxWidth: .infinity)
             }
-            .navigationTitle("Loupe")
+            .navigationTitle("ImagePreview")
         }
         .task {
             guard posts.isEmpty else { return }
@@ -34,7 +34,7 @@ struct FeedView: View {
                   let image = PlatformImage(data: data) else { continue }
             posts[p].photos[i].thumbnail = image
             // The viewer starts from the thumbnail it already has.
-            posts[p].photos[i].image = LoupeImage(url: URL(string: "https://picsum.photos/id/\(id)/2400/1600")!, placeholder: image)
+            posts[p].photos[i].image = PreviewImage(url: URL(string: "https://picsum.photos/id/\(id)/2400/1600")!, placeholder: image)
         }
     }
 }
@@ -55,7 +55,7 @@ struct PostView: View {
             }
         }
         .padding(16)
-        .loupe(selection: $opened, items: post.photos, configuration: .example) { photo in
+        .imagePreview(selection: $opened, items: post.photos, configuration: .example) { photo in
             photo.image
         }
     }
@@ -104,17 +104,17 @@ struct MediaGrid: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
-            .loupeSource(photo.id, cornerRadius: 12)
+            .imagePreviewSource(photo.id, cornerRadius: 12)
             .onTapGesture { open(photo.id) }
     }
 }
 
-extension LoupeConfiguration {
-    /// The defaults; `LOUPE_TRANSITION_RESPONSE` (seconds) slows the transitions down to watch them.
-    static var example: LoupeConfiguration {
-        var configuration = LoupeConfiguration()
-        if let value = ProcessInfo.processInfo.environment["LOUPE_TRANSITION_RESPONSE"], let response = Double(value) {
-            configuration.transitionSpring = LoupeSpring(response: response, dampingRatio: 1)
+extension ImagePreviewConfiguration {
+    /// The defaults; `PREVIEW_TRANSITION_RESPONSE` (seconds) slows the transitions down to watch them.
+    static var example: ImagePreviewConfiguration {
+        var configuration = ImagePreviewConfiguration()
+        if let value = ProcessInfo.processInfo.environment["PREVIEW_TRANSITION_RESPONSE"], let response = Double(value) {
+            configuration.transitionSpring = PreviewSpring(response: response, dampingRatio: 1)
         }
         return configuration
     }

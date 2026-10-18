@@ -3,7 +3,7 @@ import QuartzCore
 
 /// A spring, described the way SwiftUI describes one: how long it takes to respond and how
 /// much it bounces (0 settles without overshooting).
-public struct LoupeSpring: Sendable, Hashable {
+public struct PreviewSpring: Sendable, Hashable {
     public var response: Double
     public var dampingRatio: Double
 
@@ -13,9 +13,9 @@ public struct LoupeSpring: Sendable, Hashable {
     }
 
     /// Opening and closing: quick, no overshoot.
-    public static let transition = LoupeSpring(response: 0.36, dampingRatio: 1)
+    public static let transition = PreviewSpring(response: 0.36, dampingRatio: 1)
     /// Going back after a drag that did not close: quick, a hint of bounce.
-    public static let restore = LoupeSpring(response: 0.32, dampingRatio: 0.86)
+    public static let restore = PreviewSpring(response: 0.32, dampingRatio: 0.86)
 
     var stiffness: Double { pow(2 * .pi / max(response, 0.01), 2) }
     var damping: Double { 4 * .pi * dampingRatio / max(response, 0.01) }
@@ -27,10 +27,10 @@ struct SpringVector {
     private(set) var values: [Double]
     private(set) var velocities: [Double]
     private(set) var targets: [Double]
-    var spring: LoupeSpring
+    var spring: PreviewSpring
     let tolerances: [Double]
 
-    init(values: [Double], tolerances: [Double], spring: LoupeSpring) {
+    init(values: [Double], tolerances: [Double], spring: PreviewSpring) {
         self.values = values
         self.velocities = Array(repeating: 0, count: values.count)
         self.targets = values
@@ -52,7 +52,7 @@ struct SpringVector {
         }
     }
 
-    mutating func retarget(_ targets: [Double], spring: LoupeSpring? = nil) {
+    mutating func retarget(_ targets: [Double], spring: PreviewSpring? = nil) {
         self.targets = targets
         if let spring { self.spring = spring }
     }
@@ -103,7 +103,7 @@ final class FrameTicker: NSObject {
     private var link: CADisplayLink?
     private var observer: CFRunLoopObserver?
     #if !canImport(UIKit)
-    private weak var view: LoupePlatformView?
+    private weak var view: PreviewPlatformView?
     #endif
 
     #if canImport(UIKit)
@@ -111,7 +111,7 @@ final class FrameTicker: NSObject {
         self.tick = tick
     }
     #else
-    init(view: LoupePlatformView, tick: @escaping (Double) -> Void) {
+    init(view: PreviewPlatformView, tick: @escaping (Double) -> Void) {
         self.view = view
         self.tick = tick
     }

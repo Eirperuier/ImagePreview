@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct LoupeExampleApp: App {
+struct ImagePreviewExampleApp: App {
     var body: some Scene {
         WindowGroup {
             FeedView()

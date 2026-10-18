@@ -1,4 +1,4 @@
-import Loupe
+import ImagePreview
 import SwiftUI
 
 #if canImport(UIKit)
@@ -17,7 +17,7 @@ struct Photo: Identifiable {
     let id: String
     /// What the feed draws; also what the viewer draws until the full image is in.
     var thumbnail: PlatformImage?
-    var image: LoupeImage
+    var image: PreviewImage
     var aspectRatio: CGFloat
 }
 
@@ -43,7 +43,7 @@ enum Artwork {
 
     static func photo(_ id: String, _ view: some View, size: CGSize) -> Photo {
         let image = render(view, size: size)
-        return Photo(id: id, thumbnail: image, image: LoupeImage(image), aspectRatio: size.width / size.height)
+        return Photo(id: id, thumbnail: image, image: PreviewImage(image), aspectRatio: size.width / size.height)
     }
 
     static func landscape(_ hue: Double) -> some View {
@@ -139,7 +139,7 @@ enum Artwork {
         let ids = [1015, 1025, 1039, 1043, 1069]
         return Post(id: "r", author: "Picsum", text: "From the network: the full images load after they open.", photos: ids.map { id in
             let url = URL(string: "https://picsum.photos/id/\(id)/2400/1600")!
-            return Photo(id: "r\(id)", thumbnail: nil, image: LoupeImage(url: url), aspectRatio: 1.5)
+            return Photo(id: "r\(id)", thumbnail: nil, image: PreviewImage(url: url), aspectRatio: 1.5)
         })
     }
 }

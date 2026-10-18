@@ -2,7 +2,7 @@ import SwiftUI
 
 extension View {
     /// Shows `items` full screen while `selection` is set, opening out of the thumbnail marked
-    /// with ``loupeSource(_:cornerRadius:contentMode:)`` for the selected item and closing back into it.
+    /// with ``imagePreviewSource(_:cornerRadius:contentMode:)`` for the selected item and closing back into it.
     ///
     /// Swiping to another image updates `selection`; closing sets it to `nil`, and setting it to `nil` closes.
     ///
@@ -12,22 +12,22 @@ extension View {
     /// LazyVGrid(columns: columns) {
     ///     ForEach(photos) { photo in
     ///         Thumbnail(photo)
-    ///             .loupeSource(photo.id, cornerRadius: 12)
+    ///             .imagePreviewSource(photo.id, cornerRadius: 12)
     ///             .onTapGesture { opened = photo.id }
     ///     }
     /// }
-    /// .loupe(selection: $opened, items: photos) { photo in
-    ///     LoupeImage(url: photo.url, placeholder: photo.thumbnail)
+    /// .imagePreview(selection: $opened, items: photos) { photo in
+    ///     PreviewImage(url: photo.url, placeholder: photo.thumbnail)
     /// }
     /// ```
-    public func loupe<Item: Identifiable>(
+    public func imagePreview<Item: Identifiable>(
         selection: Binding<Item.ID?>,
         items: [Item],
-        configuration: LoupeConfiguration = .init(),
-        image: @escaping (Item) -> LoupeImage
+        configuration: ImagePreviewConfiguration = .init(),
+        image: @escaping (Item) -> PreviewImage
     ) -> some View {
-        loupe(selection: selection, items: items, configuration: configuration, image: image) { context in
-            LoupeAccessories(context: context)
+        imagePreview(selection: selection, items: items, configuration: configuration, image: image) { context in
+            ImagePreviewAccessories(context: context)
         }
     }
 
@@ -35,14 +35,14 @@ extension View {
     ///
     /// The accessories cover the screen; touches that land on nothing of theirs reach the images.
     /// A tap hides and shows them, and they fade while an image is dragged.
-    public func loupe<Item: Identifiable, Accessories: View>(
+    public func imagePreview<Item: Identifiable, Accessories: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
-        configuration: LoupeConfiguration = .init(),
-        image: @escaping (Item) -> LoupeImage,
-        @ViewBuilder accessories: @escaping (LoupeContext) -> Accessories
+        configuration: ImagePreviewConfiguration = .init(),
+        image: @escaping (Item) -> PreviewImage,
+        @ViewBuilder accessories: @escaping (ImagePreviewContext) -> Accessories
     ) -> some View {
-        modifier(LoupeModifier(selection: selection, items: items, configuration: configuration, image: image, accessories: accessories))
+        modifier(ImagePreviewModifier(selection: selection, items: items, configuration: configuration, image: image, accessories: accessories))
     }
 
     /// Marks this view as the thumbnail of the item with `id`: the viewer opens out of it and
@@ -51,8 +51,8 @@ extension View {
     /// - Parameters:
     ///   - cornerRadius: The thumbnail's corner radius.
     ///   - contentMode: How the thumbnail draws its image: `.fill` for `scaledToFill`, `.fit` for `scaledToFit`.
-    public func loupeSource<ID: Hashable>(_ id: ID, cornerRadius: CGFloat = 0, contentMode: LoupeContentMode = .fill) -> some View {
-        modifier(LoupeSourceModifier(id: AnyHashable(id), cornerRadius: cornerRadius, contentMode: contentMode))
+    public func imagePreviewSource<ID: Hashable>(_ id: ID, cornerRadius: CGFloat = 0, contentMode: PreviewContentMode = .fill) -> some View {
+        modifier(PreviewSourceModifier(id: AnyHashable(id), cornerRadius: cornerRadius, contentMode: contentMode))
     }
 }
 
@@ -60,14 +60,14 @@ extension View {
 
 /// The thumbnails on screen, by item, and which of them are hidden because their image is out.
 @MainActor @Observable
-final class LoupeRegistry {
+final class PreviewRegistry {
     private(set) var hidden: Set<AnyHashable> = []
     @ObservationIgnored private var anchors: [AnyHashable: Anchor] = [:]
 
     struct Anchor {
-        weak var view: LoupePlatformView?
+        weak var view: PreviewPlatformView?
         var cornerRadius: CGFloat
-        var contentMode: LoupeContentMode
+        var contentMode: PreviewContentMode
     }
 
     func register(_ id: AnyHashable, _ anchor: Anchor) { anchors[id] = anchor }
@@ -76,19 +76,19 @@ final class LoupeRegistry {
         if isHidden { hidden.insert(id) } else { hidden.remove(id) }
     }
 
-    func source(_ id: AnyHashable) -> LoupeSource? {
+    func source(_ id: AnyHashable) -> PreviewSource? {
         guard let anchor = anchors[id], let view = anchor.view else { return nil }
-        return LoupeSource(view: view, cornerRadius: anchor.cornerRadius, contentMode: anchor.contentMode) { [weak self] in
+        return PreviewSource(view: view, cornerRadius: anchor.cornerRadius, contentMode: anchor.contentMode) { [weak self] in
             self?.setHidden(id, $0)
         }
     }
 }
 
-struct LoupeSourceModifier: ViewModifier {
+struct PreviewSourceModifier: ViewModifier {
     let id: AnyHashable
     let cornerRadius: CGFloat
-    let contentMode: LoupeContentMode
-    @Environment(LoupeRegistry.self) private var registry: LoupeRegistry?
+    let contentMode: PreviewContentMode
+    @Environment(PreviewRegistry.self) private var registry: PreviewRegistry?
 
     func body(content: Content) -> some View {
         let isHidden = registry?.hidden.contains(id) == true
@@ -97,7 +97,7 @@ struct LoupeSourceModifier: ViewModifier {
             .animation(nil, value: isHidden)
             .background {
                 if let registry {
-                    LoupeAnchorView(id: id, cornerRadius: cornerRadius, contentMode: contentMode, registry: registry)
+                    PreviewAnchorView(id: id, cornerRadius: cornerRadius, contentMode: contentMode, registry: registry)
                         .allowsHitTesting(false)
                 }
             }
@@ -105,24 +105,24 @@ struct LoupeSourceModifier: ViewModifier {
 }
 
 /// An empty platform view the size of the thumbnail, through which its frame on screen is read.
-struct LoupeAnchorView {
+struct PreviewAnchorView {
     let id: AnyHashable
     let cornerRadius: CGFloat
-    let contentMode: LoupeContentMode
-    let registry: LoupeRegistry
+    let contentMode: PreviewContentMode
+    let registry: PreviewRegistry
 
-    @MainActor func update(_ view: LoupePlatformView) {
+    @MainActor func update(_ view: PreviewPlatformView) {
         registry.register(id, .init(view: view, cornerRadius: cornerRadius, contentMode: contentMode))
     }
 }
 
 /// An empty platform view in the hierarchy, from which the viewer finds its window.
-struct LoupeHostView {
-    let presenter: LoupePresenter
+struct PreviewHostView {
+    let presenter: PreviewPresenter
 }
 
 #if canImport(UIKit)
-extension LoupeAnchorView: UIViewRepresentable {
+extension PreviewAnchorView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.isUserInteractionEnabled = false
@@ -133,7 +133,7 @@ extension LoupeAnchorView: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) { update(view) }
 }
 
-extension LoupeHostView: UIViewRepresentable {
+extension PreviewHostView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.isUserInteractionEnabled = false
@@ -144,9 +144,9 @@ extension LoupeHostView: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) { presenter.host = view }
 }
 #elseif canImport(AppKit)
-extension LoupeAnchorView: NSViewRepresentable {
+extension PreviewAnchorView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
-        let view = LoupeInertView()
+        let view = PreviewInertView()
         update(view)
         return view
     }
@@ -154,9 +154,9 @@ extension LoupeAnchorView: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) { update(view) }
 }
 
-extension LoupeHostView: NSViewRepresentable {
+extension PreviewHostView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
-        let view = LoupeInertView()
+        let view = PreviewInertView()
         presenter.host = view
         return view
     }
@@ -165,7 +165,7 @@ extension LoupeHostView: NSViewRepresentable {
 }
 
 /// Takes no clicks.
-final class LoupeInertView: NSView {
+final class PreviewInertView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 #endif
@@ -174,18 +174,18 @@ final class LoupeInertView: NSView {
 
 /// Opens, moves and closes the viewer as the selection changes.
 @MainActor
-final class LoupePresenter {
-    weak var host: LoupePlatformView?
-    private var controller: LoupeController?
+final class PreviewPresenter {
+    weak var host: PreviewPlatformView?
+    private var controller: ImagePreviewController?
     private var shownID: AnyHashable?
 
     func update<Item: Identifiable, Accessories: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
-        configuration: LoupeConfiguration,
-        registry: LoupeRegistry,
-        image: @escaping (Item) -> LoupeImage,
-        accessories: @escaping (LoupeContext) -> Accessories
+        configuration: ImagePreviewConfiguration,
+        registry: PreviewRegistry,
+        image: @escaping (Item) -> PreviewImage,
+        accessories: @escaping (ImagePreviewContext) -> Accessories
     ) {
         let selected = selection.wrappedValue
         guard let selected else {
@@ -202,7 +202,7 @@ final class LoupePresenter {
         }
         guard let host else { return }
         let ids = items.map { AnyHashable($0.id) }
-        let controller = LoupeController(count: items.count, index: index, configuration: configuration) { i in
+        let controller = ImagePreviewController(count: items.count, index: index, configuration: configuration) { i in
             image(items[i])
         } source: { [weak registry] i in
             registry?.source(ids[i])
@@ -223,19 +223,19 @@ final class LoupePresenter {
     }
 }
 
-struct LoupeModifier<Item: Identifiable, Accessories: View>: ViewModifier {
+struct ImagePreviewModifier<Item: Identifiable, Accessories: View>: ViewModifier {
     let selection: Binding<Item.ID?>
     let items: [Item]
-    let configuration: LoupeConfiguration
-    let image: (Item) -> LoupeImage
-    let accessories: (LoupeContext) -> Accessories
-    @State private var registry = LoupeRegistry()
-    @State private var presenter = LoupePresenter()
+    let configuration: ImagePreviewConfiguration
+    let image: (Item) -> PreviewImage
+    let accessories: (ImagePreviewContext) -> Accessories
+    @State private var registry = PreviewRegistry()
+    @State private var presenter = PreviewPresenter()
 
     func body(content: Content) -> some View {
         content
             .environment(registry)
-            .background { LoupeHostView(presenter: presenter).allowsHitTesting(false) }
+            .background { PreviewHostView(presenter: presenter).allowsHitTesting(false) }
             .onChange(of: selection.wrappedValue, initial: true) {
                 presenter.update(
                     selection: selection, items: items, configuration: configuration,
@@ -249,22 +249,22 @@ struct LoupeModifier<Item: Identifiable, Accessories: View>: ViewModifier {
 
 /// The accessories the viewer draws unless you give your own: a close button and, for more
 /// than one image, where you are among them.
-public struct LoupeAccessories: View {
-    let context: LoupeContext
+public struct ImagePreviewAccessories: View {
+    let context: ImagePreviewContext
 
-    public init(context: LoupeContext) {
+    public init(context: ImagePreviewContext) {
         self.context = context
     }
 
     public var body: some View {
         VStack {
             HStack {
-                LoupeCloseButton(context: context)
+                ImagePreviewCloseButton(context: context)
                 Spacer()
             }
             Spacer()
             if context.count > 1 {
-                LoupePageIndicator(context: context)
+                ImagePreviewPageIndicator(context: context)
             }
         }
         .padding(.horizontal, 16)
@@ -273,10 +273,10 @@ public struct LoupeAccessories: View {
 }
 
 /// A round button that closes the viewer.
-public struct LoupeCloseButton: View {
-    let context: LoupeContext
+public struct ImagePreviewCloseButton: View {
+    let context: ImagePreviewContext
 
-    public init(context: LoupeContext) {
+    public init(context: ImagePreviewContext) {
         self.context = context
     }
 
@@ -298,10 +298,10 @@ public struct LoupeCloseButton: View {
 }
 
 /// Dots for a few images, "3 of 12" for many.
-public struct LoupePageIndicator: View {
-    let context: LoupeContext
+public struct ImagePreviewPageIndicator: View {
+    let context: ImagePreviewContext
 
-    public init(context: LoupeContext) {
+    public init(context: ImagePreviewContext) {
         self.context = context
     }
 

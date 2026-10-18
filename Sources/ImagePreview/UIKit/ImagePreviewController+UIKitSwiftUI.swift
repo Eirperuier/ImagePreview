@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 import SwiftUI
 
-extension LoupeController {
+extension ImagePreviewController {
     /// Draws a SwiftUI view over the images as the accessories.
     public func setAccessories<Content: View>(_ content: Content) {
         let host = UIHostingController(rootView: content)

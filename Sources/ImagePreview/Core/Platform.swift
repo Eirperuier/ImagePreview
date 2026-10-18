@@ -2,12 +2,12 @@
 import UIKit
 
 /// The platform's image type: `UIImage` on iOS, iPadOS, Mac Catalyst and visionOS, `NSImage` on macOS.
-public typealias LoupePlatformImage = UIImage
+public typealias PreviewPlatformImage = UIImage
 /// The platform's view type: `UIView`, or `NSView` on macOS.
-public typealias LoupePlatformView = UIView
+public typealias PreviewPlatformView = UIView
 #elseif canImport(AppKit)
 import AppKit
 
-public typealias LoupePlatformImage = NSImage
-public typealias LoupePlatformView = NSView
+public typealias PreviewPlatformImage = NSImage
+public typealias PreviewPlatformView = NSView
 #endif

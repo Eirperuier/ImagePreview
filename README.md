@@ -1,4 +1,4 @@
-# Loupe
+# ImagePreview
 
 A photo viewer for Apple platforms that opens out of the thumbnail you tapped and closes back into it.
 
@@ -20,17 +20,17 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/<owner>/Loupe.git", from: "0.1.0")
+.package(url: "https://github.com/<owner>/ImagePreview.git", from: "0.1.0")
 ```
 
 Requires iOS 17, Mac Catalyst 17, macOS 14 or visionOS 1.
 
 ## SwiftUI
 
-Mark each thumbnail with `loupeSource`, and attach `loupe` to a view that contains them:
+Mark each thumbnail with `imagePreviewSource`, and attach `imagePreview` to a view that contains them:
 
 ```swift
-import Loupe
+import ImagePreview
 
 struct Gallery: View {
     let photos: [Photo]
@@ -44,12 +44,12 @@ struct Gallery: View {
                     .scaledToFill()
                     .frame(height: 120)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .loupeSource(photo.id, cornerRadius: 12)
+                    .imagePreviewSource(photo.id, cornerRadius: 12)
                     .onTapGesture { opened = photo.id }
             }
         }
-        .loupe(selection: $opened, items: photos) { photo in
-            LoupeImage(url: photo.url, placeholder: photo.thumbnail)
+        .imagePreview(selection: $opened, items: photos) { photo in
+            PreviewImage(url: photo.url, placeholder: photo.thumbnail)
         }
     }
 }
@@ -59,15 +59,15 @@ struct Gallery: View {
 
 ### Accessories
 
-By default the viewer draws a close button and, for several images, a page indicator. Draw your own instead; `LoupeContext` gives the index, the count, `dismiss()` and `select(_:)`:
+By default the viewer draws a close button and, for several images, a page indicator. Draw your own instead; `ImagePreviewContext` gives the index, the count, `dismiss()` and `select(_:)`:
 
 ```swift
-.loupe(selection: $opened, items: photos) { photo in
-    LoupeImage(url: photo.url, placeholder: photo.thumbnail)
+.imagePreview(selection: $opened, items: photos) { photo in
+    PreviewImage(url: photo.url, placeholder: photo.thumbnail)
 } accessories: { context in
     VStack {
         HStack {
-            LoupeCloseButton(context: context)
+            ImagePreviewCloseButton(context: context)
             Spacer()
             ShareLink(item: photos[context.index].url)
         }
@@ -83,17 +83,17 @@ The accessories cover the screen; a touch that lands where they draw nothing rea
 ## UIKit and AppKit
 
 ```swift
-let loupe = LoupeController(count: photos.count, index: tappedIndex) { index in
-    LoupeImage(url: photos[index].url, placeholder: cells[index].imageView.image)
+let preview = ImagePreviewController(count: photos.count, index: tappedIndex) { index in
+    PreviewImage(url: photos[index].url, placeholder: cells[index].imageView.image)
 } source: { index in
     collectionView.cellForItem(at: IndexPath(item: index, section: 0)).map {
-        LoupeSource(view: ($0 as! PhotoCell).imageView, cornerRadius: 8)
+        PreviewSource(view: ($0 as! PhotoCell).imageView, cornerRadius: 8)
     }
 }
-loupe.onIndexChange = { index in
+preview.onIndexChange = { index in
     collectionView.scrollToItem(at: IndexPath(item: index, section: 0), at: .centeredVertically, animated: false)
 }
-loupe.present(from: view)
+preview.present(from: view)
 ```
 
 The source closure is asked again when the viewer closes, so after scrolling the collection view to the image on screen, the image lands in the right cell. If there is no thumbnail on screen, the image fades out where it is.
@@ -102,23 +102,23 @@ Set `accessoryView` (or `setAccessories(_:)` with a SwiftUI view) for your own c
 
 ## Images
 
-`LoupeImage` is what to show for one item:
+`PreviewImage` is what to show for one item:
 
-- `LoupeImage(image)`: an image in memory.
-- `LoupeImage(url:placeholder:)`: a remote or file URL, decoded off the main thread (orientation applied, longest side at most 4096 px) and kept in a small cache.
-- `LoupeImage(placeholder:load:)`: your own loader.
+- `PreviewImage(image)`: an image in memory.
+- `PreviewImage(url:placeholder:)`: a remote or file URL, decoded off the main thread (orientation applied, longest side at most 4096 px) and kept in a small cache.
+- `PreviewImage(placeholder:load:)`: your own loader.
 
 Pass the thumbnail you already have as the `placeholder`: the transition starts from it on the first frame and the full image cross-fades in when it arrives. Without one, the viewer starts from a picture of the thumbnail as it is on screen.
 
 ## Configuration
 
 ```swift
-var configuration = LoupeConfiguration()
+var configuration = ImagePreviewConfiguration()
 configuration.backgroundColor = CGColor(gray: 0, alpha: 1)
 configuration.pageSpacing = 16
 configuration.maximumZoomScale = 4
-configuration.transitionSpring = LoupeSpring(response: 0.36, dampingRatio: 1)
-configuration.restoreSpring = LoupeSpring(response: 0.32, dampingRatio: 0.86)
+configuration.transitionSpring = PreviewSpring(response: 0.36, dampingRatio: 1)
+configuration.restoreSpring = PreviewSpring(response: 0.32, dampingRatio: 0.86)
 configuration.tapTogglesAccessories = true   // false: a tap closes the viewer
 ```
 
@@ -126,7 +126,7 @@ With Reduce Motion on, the viewer fades in and out in place instead of flying.
 
 ## Example
 
-`Example/LoupeExample.xcodeproj` is a feed of posts with one to five images, drawn on the device, plus a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro. `LoupeExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to see them frame by frame.
+`Example/ImagePreviewExample.xcodeproj` is a feed of posts with one to five images, drawn on the device, plus a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro. `ImagePreviewExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to see them frame by frame.
 
 ## License
 

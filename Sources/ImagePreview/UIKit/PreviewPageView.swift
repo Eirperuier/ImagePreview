@@ -2,7 +2,7 @@
 import UIKit
 
 /// One image in the viewer: fitted to the screen, pinch and double-tap to zoom.
-final class LoupePageView: UIScrollView, UIScrollViewDelegate {
+final class PreviewPageView: UIScrollView, UIScrollViewDelegate {
     let imageView = UIImageView()
     var maximumZoomFactor: CGFloat = 4 {
         didSet { updateZoomLimits() }

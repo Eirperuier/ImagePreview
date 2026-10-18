@@ -2,16 +2,16 @@
 
 import PackageDescription
 
-/// Loupe: a photo viewer that opens from the thumbnail you tapped and closes back into it.
+/// ImagePreview: a photo viewer that opens from the thumbnail you tapped and closes back into it.
 /// iPhone, iPad, Mac (Catalyst and AppKit) and Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 let package = Package(
-    name: "Loupe",
+    name: "ImagePreview",
     platforms: [.iOS(.v17), .macCatalyst(.v17), .macOS(.v14), .visionOS(.v1)],
     products: [
-        .library(name: "Loupe", targets: ["Loupe"]),
+        .library(name: "ImagePreview", targets: ["ImagePreview"]),
     ],
     targets: [
-        .target(name: "Loupe", swiftSettings: [.swiftLanguageMode(.v6)]),
-        .testTarget(name: "LoupeTests", dependencies: ["Loupe"], swiftSettings: [.swiftLanguageMode(.v6)]),
+        .target(name: "ImagePreview", swiftSettings: [.swiftLanguageMode(.v6)]),
+        .testTarget(name: "ImagePreviewTests", dependencies: ["ImagePreview"], swiftSettings: [.swiftLanguageMode(.v6)]),
     ]
 )
