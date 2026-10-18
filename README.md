@@ -1,35 +1,67 @@
 # ImagePreview
 
-A photo viewer for Apple platforms that opens out of the thumbnail you tapped and closes back into it.
+Tap a thumbnail and the photo grows right out of it. Swipe through the rest, pinch to look closer, and when you're done, flick it away: it flies straight back into its thumbnail. It's the full-screen viewer you know from Photos and X, for SwiftUI, UIKit and AppKit, made to feel right under your finger.
 
-- **Seamless.** The image grows out of its thumbnail (crop, corner radius and all) and lands back in it exactly; the thumbnail hides while its image is out.
-- **Follows your finger.** Drag an image up or down, or sideways past the first or last image: it moves with the finger, shrinks about the point you grabbed and lets the screen underneath show through. Let go and it flies home carrying your flick, or springs back if the drag was short.
-- **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
-- **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
-- **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar while the images cover it, in the window's own style (a compact title bar stays compact).
-- **Videos too, and your own content.** A video plays as it opens out of its thumbnail and as it flies home; anything else that can draw itself can be a page.
-- **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
+<p align="center">
+  <img src="docs/media/iphone-images.gif" width="260" alt="Opening a photo from the feed, swiping to the next one and back, and dragging it home">
+  &nbsp;&nbsp;
+  <img src="docs/media/iphone-video.gif" width="260" alt="A video that keeps playing as it opens and as it is dragged home">
+</p>
+
+<p align="center">
+  <img src="docs/media/mac.gif" width="410" alt="The viewer on the Mac, in the window's own compact title bar">
+  <img src="docs/media/mac-video.gif" width="410" alt="A video opening and closing on the Mac">
+</p>
+
+## What it feels like
+
+- **It comes from where you tapped.** The photo grows out of its thumbnail, crop and rounded corners included, and lands back in exactly the same spot. While it's open, the thumbnail steps aside, so there's never two of it.
+- **It follows your finger.** Drag a photo down (or up, or sideways past the last one) and it moves with you, shrinking around the point you grabbed while the screen underneath shows through. Let go: a real flick sends it home, a hesitant one springs it back.
+- **You can't catch it out.** Every movement is a spring on the same state. Grab a photo mid-flight, scroll the page while it's landing, change your mind halfway: it never jumps.
+- **No waiting.** The flight starts on the very frame you tap, from the thumbnail you already have. Full-size images decode off the main thread and fade in when they're ready.
+- **Videos come alive.** A video keeps playing while it opens, while you drag it and while it flies home. And anything else that can draw itself (a live photo, a document, your own player) can be a page too.
+- **It's a real page.** Not an overlay pretending to be one: on iOS it has the system's own navigation bar and toolbar, and on the Mac it borrows the window's title bar while it's open, in the window's own style.
+- **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
 |---|---|---|
-| Move between images | swipe | two-finger swipe, drag, ← → |
+| Next and previous | swipe | two-finger swipe, drag, ← → |
 | Zoom | pinch, double-tap | pinch, double-click |
-| Close | drag up or down, or sideways past the first or last image; close button | the same with two fingers or the mouse; click outside the image, Esc, Space |
-| Bars and controls | tap to hide and show | click the image to hide and show |
+| Close | drag up or down, or sideways past the first or last image; the close button | the same with two fingers or the mouse; click outside the image, Esc, Space |
+| Bars | tap to hide and show | click the image to hide and show |
+
+## Quick start
+
+Two modifiers: one on each thumbnail, so the viewer knows where to fly from, and one on any view that contains them.
+
+```swift
+import ImagePreview
+
+ForEach(photos) { photo in
+    Thumbnail(photo)
+        .imagePreviewSource(photo.id, cornerRadius: 12)
+        .onTapGesture { opened = photo.id }
+}
+.imagePreview(selection: $opened, items: photos) { photo in
+    PreviewImage(url: photo.url, placeholder: photo.thumbnail)
+}
+```
+
+That's it. The sections below cover the rest: buttons on the bars, UIKit and AppKit, videos, and content of your own.
 
 ## Installation
 
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/Eirperuier/ImagePreview.git", from: "0.3.3")
+.package(url: "https://github.com/Eirperuier/ImagePreview.git", from: "0.4.0")
 ```
 
 Requires iOS 17, Mac Catalyst 17, macOS 14 or visionOS 1.
 
 ## SwiftUI
 
-Mark each thumbnail with `imagePreviewSource`, and attach `imagePreview` to a view that contains them:
+A complete gallery. Mark each thumbnail with `imagePreviewSource`, and attach `imagePreview` to a view that contains them:
 
 ```swift
 import ImagePreview
@@ -57,7 +89,7 @@ struct Gallery: View {
 }
 ```
 
-`selection` follows the viewer: swiping changes it, closing sets it to `nil`, and setting it to `nil` closes the viewer.
+`selection` stays in step with the viewer: swiping changes it, closing sets it to `nil`, and setting it to `nil` yourself closes the viewer.
 
 ### Actions
 
@@ -118,7 +150,15 @@ On iOS, put buttons on the bars through `preview.page.navigationItem` and `previ
 - `PreviewImage(url:placeholder:)`: a remote or file URL, decoded off the main thread (orientation applied, longest side at most 4096 px) and kept in a small cache.
 - `PreviewImage(placeholder:load:)`: your own loader.
 
-Pass the thumbnail you already have as the `placeholder`: the transition starts from it on the first frame and the full image cross-fades in when it arrives. Without one, the viewer starts from a picture of the thumbnail as it is on screen.
+Pass the thumbnail you already have as the `placeholder`: the transition starts from it on the first frame and the full image fades in when it arrives. Without one, the viewer takes a picture of the thumbnail as it is on screen and starts from that, so it never waits.
+
+The thumbnail can be any view: `Image`, `AsyncImage`, Kingfisher's `KFImage`, SDWebImage's `WebImage`. To load the full image with your own image library, use `PreviewImage(placeholder:load:)`:
+
+```swift
+PreviewImage(placeholder: ImageCache.default.retrieveImageInMemoryCache(forKey: photo.thumbnailURL.absoluteString)) {
+    try await KingfisherManager.shared.retrieveImage(with: photo.url).image
+}
+```
 
 ## Videos
 
@@ -134,7 +174,7 @@ Return `PreviewMedia` where an item can be an image or a video:
 }
 ```
 
-There are no playback controls yet.
+There are no playback controls built in yet; put your own on the bars with `actions` or `page`.
 
 ## Your own content
 
@@ -180,7 +220,7 @@ With Reduce Motion on, the viewer fades in and out in place instead of flying.
 
 ## Example
 
-`Example/ImagePreviewExample.xcodeproj` is a feed of posts with one to five images, drawn on the device, a post with a video made on the device, and a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro. `ImagePreviewExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to see them frame by frame.
+`Example/ImagePreviewExample.xcodeproj` is the feed in the recordings above: posts with one to five images drawn on the device, a clip made on the device, and a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro, offline. `ImagePreviewExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to watch them frame by frame.
 
 ## License
 
