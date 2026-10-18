@@ -137,6 +137,11 @@ public final class ImagePreviewController {
     private var springDone: (() -> Void)?
     private var pagerOffset: CGFloat = 0
     private var pagerSprings: SpringVector?
+    /// Where a drag between images would put the pager, before the rubber band.
+    private var pagingOffset: CGFloat = 0
+    /// Counts the swipes handed to the system, so a swipe it is still finishing knows it was stopped.
+    private var swipe = 0
+    private var isSwiping = false
     private var ticker: FrameTicker?
 
     private var gesture: Gesture = .none
@@ -389,11 +394,12 @@ public final class ImagePreviewController {
 
     private var currentPage: PageView? { pages[index] }
 
-    /// Springs the pager to a page, carrying the swipe's velocity.
+    /// Springs the pager to a page, carrying the drag's velocity.
     private func settlePager(at target: Int, velocity: CGFloat) {
+        stopSwipe()
         let target = min(max(target, 0), count - 1)
-        var springs = pagerSprings ?? SpringVector(values: [Double(pagerOffset)], tolerances: [0.3], spring: PreviewSpring(response: 0.38, dampingRatio: 1))
-        springs.set(values: [Double(pagerOffset)], velocities: [Double(velocity)])
+        var springs = pagerSprings ?? SpringVector(values: [Double(pagerOffset)], tolerances: [0.3], spring: PreviewSpring(response: 0.3, dampingRatio: 1))
+        springs.set(values: [Double(pagerOffset)], velocities: [Double(min(max(velocity, -4000), 4000))])
         springs.retarget([Double(CGFloat(target) * pageStride)])
         pagerSprings = springs
         ticker?.start()
@@ -572,7 +578,9 @@ public final class ImagePreviewController {
         // Up or down closes; so does sideways past the first or last image. Other sideways moves page.
         guard let axis = DismissDrag.axis(for: direction, index: index, count: count) else {
             guard phase == .presented, count > 1, !zoomed else { return gesture = .none }
+            stopSwipe()
             pagerSprings = nil
+            pagingOffset = pagerOffset
             gesture = .paging
             return
         }
@@ -592,13 +600,8 @@ public final class ImagePreviewController {
         tracker.add(delta, at: time)
         switch gesture {
         case .paging:
-            var offset = pagerOffset - delta.x
-            let limit = CGFloat(count - 1) * pageStride
-            if offset < 0 || offset > limit {
-                // Past the first or last image: resist.
-                offset = pagerOffset - delta.x * 0.35
-            }
-            pagerOffset = offset
+            pagingOffset -= delta.x
+            pagerOffset = rubberBanded(pagingOffset)
             layoutPages()
         case .dismissing:
             translation.x += delta.x
@@ -629,6 +632,58 @@ public final class ImagePreviewController {
             break
         }
         gesture = .none
+    }
+
+    /// Where the pager is for where the drag would put it: past the first or last image it gives
+    /// less and less, like a scroll view's rubber band.
+    private func rubberBanded(_ offset: CGFloat) -> CGFloat {
+        let limit = CGFloat(count - 1) * pageStride
+        let width = max(area.width, 1)
+        func band(_ over: CGFloat) -> CGFloat { (1 - 1 / (over * 0.55 / width + 1)) * width }
+        if offset < 0 { return -band(-offset) }
+        if offset > limit { return limit + band(offset - limit) }
+        return offset
+    }
+
+    /// A two-finger swipe between images, tracked the way the system tracks swipes between pages:
+    /// it follows the fingers, rubber-bands where there is no image, and when the fingers lift it
+    /// finishes with the system's own animation, on to the next image or back. Off when the person
+    /// has turned off swiping between pages; then the pager's own spring finishes the swipe.
+    fileprivate func trackSwipe(_ event: NSEvent) -> Bool {
+        guard gesture == .paging, NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
+        let start = Int((pagerOffset / pageStride).rounded())
+        let base = CGFloat(start) * pageStride
+        swipe += 1
+        let swipe = swipe
+        isSwiping = true
+        gesture = .none
+        // The amount is positive for a swipe to the right, toward the previous image.
+        event.trackSwipeEvent(
+            options: [.clampGestureAmount],
+            dampenAmountThresholdMin: start < count - 1 ? -1 : 0,
+            max: start > 0 ? 1 : 0
+        ) { [weak self] amount, _, isComplete, stop in
+            guard let self, self.swipe == swipe, self.phase == .presented, self.pageStride > 0 else {
+                stop.pointee = true
+                return
+            }
+            if isComplete { self.isSwiping = false }
+            self.pagerOffset = base - amount * self.pageStride
+            self.layoutPages()
+            if isComplete {
+                self.pagerOffset = CGFloat(self.index) * self.pageStride
+                self.layoutPages()
+            }
+        }
+        return true
+    }
+
+    /// Stops a swipe the system is still finishing, leaving the pager on the image it was headed for.
+    private func stopSwipe() {
+        guard isSwiping else { return }
+        swipe += 1
+        isSwiping = false
+        pagerOffset = CGFloat(index) * pageStride
     }
 
     fileprivate func handleClick(at point: CGPoint) {
@@ -781,7 +836,8 @@ public final class ImagePreviewController {
         }
 
         /// Two-finger swipes: sideways moves between images, up or down closes. The momentum
-        /// that follows a swipe is ignored; the springs carry the swipe's velocity instead.
+        /// that follows a swipe is ignored; the system finishes a swipe between images, and the
+        /// springs carry the velocity of one that closes.
         func scrollGesture(_ event: NSEvent) -> Bool {
             guard let controller, event.hasPreciseScrollingDeltas, event.momentumPhase == [] else {
                 return event.momentumPhase != []
@@ -796,6 +852,7 @@ public final class ImagePreviewController {
                     guard delta != .zero else { return true }
                     scrollBegan = true
                     controller.beginGesture(at: convert(event.locationInWindow, from: nil), direction: delta)
+                    if controller.trackSwipe(event) { return true }
                 }
                 controller.moveGesture(by: delta, time: event.timestamp)
                 return true
