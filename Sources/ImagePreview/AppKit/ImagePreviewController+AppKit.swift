@@ -139,7 +139,9 @@ public final class ImagePreviewController {
     private var pagerSprings: SpringVector?
     /// Where a drag between images would put the pager, before the rubber band.
     private var pagingOffset: CGFloat = 0
-    /// Counts the swipes handed to the system, so a swipe it is still finishing knows it was stopped.
+    /// Where the fingers have put the pager since the last frame; the next frame puts it there.
+    private var followedOffset: CGFloat?
+    /// Counts the swipes tracked by the system, so a stopped one knows it was.
     private var swipe = 0
     private var isSwiping = false
     private var ticker: FrameTicker?
@@ -398,6 +400,8 @@ public final class ImagePreviewController {
     /// Springs the pager to a page, carrying the drag's velocity.
     private func settlePager(at target: Int, velocity: CGFloat) {
         stopSwipe()
+        if let followedOffset { pagerOffset = followedOffset }
+        followedOffset = nil
         let target = min(max(target, 0), count - 1)
         var springs = pagerSprings ?? SpringVector(values: [Double(pagerOffset)], tolerances: [0.3], spring: PreviewSpring(response: 0.3, dampingRatio: 1))
         springs.set(values: [Double(pagerOffset)], velocities: [Double(min(max(velocity, -4000), 4000))])
@@ -594,6 +598,7 @@ public final class ImagePreviewController {
         // The pager, now hidden, waits on the image for when the image goes back.
         stopSwipe()
         pagerSprings = nil
+        followedOffset = nil
         pagerOffset = CGFloat(index) * pageStride
         layoutPages()
         giveWindowBack()
@@ -607,8 +612,7 @@ public final class ImagePreviewController {
         switch gesture {
         case .paging:
             pagingOffset -= delta.x
-            pagerOffset = rubberBanded(pagingOffset)
-            layoutPages()
+            follow(rubberBanded(pagingOffset))
         case .dismissing:
             translation.x += delta.x
             translation.y += delta.y
@@ -622,10 +626,7 @@ public final class ImagePreviewController {
         let v = tracker.velocity
         switch gesture {
         case .paging:
-            let projected = (pagerOffset - v.x * 0.15) / pageStride
-            let current = CGFloat(index)
-            let target = Int(min(max(projected.rounded(), current - 1), current + 1))
-            settlePager(at: target, velocity: -v.x)
+            finishPaging(around: index, velocity: -v.x)
         case .dismissing:
             let closes = drag?.closes(translation: translation, velocity: v) == true
             drag = nil
@@ -651,10 +652,26 @@ public final class ImagePreviewController {
         return offset
     }
 
-    /// A two-finger swipe between images, tracked the way the system tracks swipes between pages:
-    /// it follows the fingers, rubber-bands where there is no image, and when the fingers lift it
-    /// finishes with the system's own animation, on to the next image or back. Off when the person
-    /// has turned off swiping between pages; then the pager's own spring finishes the swipe.
+    /// Moves the pager where the fingers put it, on the next frame: in step with the display,
+    /// however the fingers' moves arrive.
+    private func follow(_ offset: CGFloat) {
+        followedOffset = offset
+        ticker?.start()
+    }
+
+    /// Springs the pager to the image the fingers left it nearest, or on to the next one in the
+    /// direction they flicked, at most one away from `page`.
+    private func finishPaging(around page: Int, velocity: CGFloat) {
+        let offset = followedOffset ?? pagerOffset
+        let projected = (offset + velocity * 0.15) / pageStride
+        let target = Int(min(max(projected.rounded(), CGFloat(page - 1)), CGFloat(page + 1)))
+        settlePager(at: target, velocity: velocity)
+    }
+
+    /// A two-finger swipe between images, followed the way the system follows swipes between pages:
+    /// as far as the fingers go, rubber-banding where there is no image. When the fingers lift, the
+    /// pager's spring finishes it, carrying their speed, like moving with the arrow keys. Off when
+    /// the person has turned off swiping between pages; then the swipe's scroll moves the pager.
     fileprivate func trackSwipe(_ event: NSEvent) -> Bool {
         guard gesture == .paging, NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
         // The swipe starts where the pager is, which is between images when one starts before the
@@ -667,26 +684,34 @@ public final class ImagePreviewController {
         let swipe = swipe
         isSwiping = true
         gesture = .none
+        var last = from
         // The amount is positive for a swipe to the right, toward the previous image.
         event.trackSwipeEvent(
-            options: [.clampGestureAmount],
+            options: [],
             dampenAmountThresholdMin: start < count - 1 ? -1 : 0,
             max: start > 0 ? 1 : 0
-        ) { [weak self] amount, _, isComplete, stop in
-            guard let self, self.swipe == swipe, self.phase == .presented, self.pageStride > 0 else {
+        ) { [weak self] amount, phase, _, stop in
+            guard let self, self.swipe == swipe else {
                 stop.pointee = true
                 return
             }
-            if isComplete { self.isSwiping = false }
-            self.pagerOffset = from - amount * (amount > 0 ? from - previous : next - from)
-            self.layoutPages()
-            // Called back where it started between images: the pager's spring finishes.
-            if isComplete { self.settlePager(at: self.index, velocity: 0) }
+            guard self.phase == .presented, self.pageStride > 0 else {
+                self.isSwiping = false
+                stop.pointee = true
+                return
+            }
+            let offset = from - amount * (amount > 0 ? from - previous : next - from)
+            self.tracker.add(CGPoint(x: last - offset, y: 0), at: ProcessInfo.processInfo.systemUptime)
+            last = offset
+            self.follow(offset)
+            guard phase == .ended || phase == .cancelled else { return }
+            stop.pointee = true
+            self.finishPaging(around: start, velocity: phase == .ended ? -self.tracker.velocity.x : 0)
         }
         return true
     }
 
-    /// Stops a swipe the system is still finishing, leaving the pager where it is.
+    /// Stops following a swipe, leaving the pager where it is.
     private func stopSwipe() {
         guard isSwiping else { return }
         swipe += 1
@@ -744,6 +769,11 @@ public final class ImagePreviewController {
 
     private func tick(_ dt: Double) {
         if let handoff { return handOver(handoff) }
+        if let followedOffset {
+            pagerOffset = followedOffset
+            self.followedOffset = nil
+            layoutPages()
+        }
         if var pagerSprings {
             let done = pagerSprings.step(dt)
             self.pagerSprings = done ? nil : pagerSprings
@@ -768,7 +798,7 @@ public final class ImagePreviewController {
                 completion?()
             }
         }
-        if springs == nil, pagerSprings == nil, handoff == nil { ticker?.stop() }
+        if springs == nil, pagerSprings == nil, handoff == nil, !isSwiping, gesture != .paging { ticker?.stop() }
     }
 
     // MARK: Views
