@@ -48,19 +48,20 @@ public final class ImagePreviewController {
     /// - Parameters:
     ///   - count: How many images there are.
     ///   - index: The image to open.
-    ///   - image: The image at an index; asked for when it is about to be shown.
+    ///   - image: The image or video at an index (a ``PreviewImage``, a ``PreviewVideo``, or
+    ///     ``PreviewMedia`` for either); asked for when it is about to be shown.
     ///   - source: The thumbnail of the image at an index, if it is on screen.
-    public init(
+    public init<Media: PreviewMediaConvertible>(
         count: Int,
         index: Int = 0,
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Int) -> PreviewImage,
+        image: @escaping (Int) -> Media,
         source: @escaping (Int) -> PreviewSource? = { _ in nil }
     ) {
         self.count = max(count, 0)
         self.context = ImagePreviewContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
         self.configuration = configuration
-        self.contentProvider = { ImageContent(image($0)) }
+        self.contentProvider = { image($0).previewMedia.makeContent() }
         self.sourceProvider = source
         context.onDismiss = { [weak self] in self?.dismiss() }
         context.onSelect = { [weak self] in self?.select($0, animated: true) }
@@ -111,7 +112,11 @@ public final class ImagePreviewController {
     /// Viewers on screen keep themselves alive until they have closed.
     private static var retained: [ObjectIdentifier: ImagePreviewController] = [:]
 
-    private var phase: Phase = .closed
+    private var phase: Phase = .closed {
+        didSet { updateActive() }
+    }
+    /// The content playing, if any: the one on screen while the viewer is presented.
+    private var activeIndex: Int?
     private var navigation: PreviewNavigationController?
     lazy var stage = PreviewStageViewController(controller: self)
     private let transitioning = PreviewTransitioning()
@@ -226,6 +231,14 @@ public final class ImagePreviewController {
         return content
     }
 
+    private func updateActive() {
+        let active = phase == .presented ? index : nil
+        guard active != activeIndex else { return }
+        if let activeIndex { contents[activeIndex]?.setActive(false) }
+        if let active { content(active).setActive(true) }
+        activeIndex = active
+    }
+
     /// The best picture to draw for an index right now.
     private func currentImage(_ i: Int) -> UIImage? {
         content(i).still ?? fallbacks[i]
@@ -285,6 +298,7 @@ public final class ImagePreviewController {
     private func setIndex(_ i: Int) {
         guard i != context.index else { return }
         context.index = i
+        updateActive()
         if phase != .closed, phase != .closing { hideSource() }
         onIndexChange?(i)
     }
@@ -375,7 +389,7 @@ public final class ImagePreviewController {
     private func liftHero() {
         guard let root, let page = currentPage else { return }
         let image = page.imageView.convert(page.imageView.bounds, to: root)
-        hero.imageView.image = page.image
+        hero.imageView.image = currentImage(index) ?? page.image
         hero.isHidden = false
         setHero(HeroState(image: image, clip: image.intersection(root.bounds), cornerRadius: 0, backdrop: 1))
         pager.isHidden = true

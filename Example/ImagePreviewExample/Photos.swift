@@ -1,3 +1,4 @@
+import AVFoundation
 import ImagePreview
 import SwiftUI
 
@@ -17,8 +18,9 @@ struct Photo: Identifiable {
     let id: String
     /// What the feed draws; also what the viewer draws until the full image is in.
     var thumbnail: PlatformImage?
-    var image: PreviewImage
+    var image: PreviewMedia
     var aspectRatio: CGFloat
+    var isVideo = false
 }
 
 struct Post: Identifiable {
@@ -43,7 +45,7 @@ enum Artwork {
 
     static func photo(_ id: String, _ view: some View, size: CGSize) -> Photo {
         let image = render(view, size: size)
-        return Photo(id: id, thumbnail: image, image: PreviewImage(image), aspectRatio: size.width / size.height)
+        return Photo(id: id, thumbnail: image, image: .image(PreviewImage(image)), aspectRatio: size.width / size.height)
     }
 
     static func landscape(_ hue: Double) -> some View {
@@ -139,7 +141,90 @@ enum Artwork {
         let ids = [1015, 1025, 1039, 1043, 1069]
         return Post(id: "r", author: "Picsum", text: "From the network: the full images load after they open.", photos: ids.map { id in
             let url = URL(string: "https://picsum.photos/id/\(id)/2400/1600")!
-            return Photo(id: "r\(id)", thumbnail: nil, image: PreviewImage(url: url), aspectRatio: 1.5)
+            return Photo(id: "r\(id)", thumbnail: nil, image: .image(PreviewImage(url: url)), aspectRatio: 1.5)
         })
+    }
+}
+
+/// A clip drawn on the device, so the example plays a video offline: the sun crossing the sky.
+enum Clip {
+    static let width = 960, height = 540, frames = 120
+
+    struct Made: @unchecked Sendable {
+        let url: URL
+        let poster: CGImage
+    }
+
+    @MainActor static func post() async -> Post? {
+        guard let clip = try? await make() else { return nil }
+        #if canImport(UIKit)
+        let poster = UIImage(cgImage: clip.poster)
+        #else
+        let poster = NSImage(cgImage: clip.poster, size: CGSize(width: width, height: height))
+        #endif
+        return Post(id: "v", author: "Sol", text: "A clip and a still.", photos: [
+            Photo(id: "v1", thumbnail: poster, image: .video(PreviewVideo(url: clip.url, poster: poster)),
+                  aspectRatio: CGFloat(width) / CGFloat(height), isVideo: true),
+            Artwork.photo("v2", Artwork.landscape(0.12), size: CGSize(width: 960, height: 640)),
+        ])
+    }
+
+    /// Four seconds of H.264, written to a temporary file.
+    nonisolated static func make() async throws -> Made {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePreviewExample-clip.mp4")
+        try? FileManager.default.removeItem(at: url)
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width, kCVPixelBufferHeightKey as String: height,
+        ])
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+        for i in 0..<frames {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(2)) }
+            guard let pool = adaptor.pixelBufferPool else { throw CocoaError(.fileWriteUnknown) }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+            guard let buffer else { throw CocoaError(.fileWriteUnknown) }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            if let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height, bitsPerComponent: 8,
+                                       bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+                draw(CGFloat(i) / CGFloat(frames - 1), in: context)
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 30))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
+
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)!
+        draw(0, in: context)
+        return Made(url: url, poster: context.makeImage()!)
+    }
+
+    /// The frame at `t` (0 to 1): the sun rises on the left and sets on the right, the sky warming as it goes.
+    nonisolated static func draw(_ t: CGFloat, in context: CGContext) {
+        let w = CGFloat(width), h = CGFloat(height)
+        let warmth = 1 - sin(.pi * t)
+        let sky = [CGColor(red: 0.3 + 0.5 * warmth, green: 0.55, blue: 0.95 - 0.4 * warmth, alpha: 1),
+                   CGColor(red: 0.98, green: 0.75 - 0.2 * warmth, blue: 0.55, alpha: 1)] as CFArray
+        let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: sky, locations: [0, 1])!
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: h), end: CGPoint(x: 0, y: 0), options: [])
+        let sun = CGPoint(x: w * (0.12 + 0.76 * t), y: h * (0.3 + 0.5 * sin(.pi * t)))
+        context.setFillColor(CGColor(red: 1, green: 0.97, blue: 0.88, alpha: 1))
+        context.fillEllipse(in: CGRect(x: sun.x - 50, y: sun.y - 50, width: 100, height: 100))
+        context.setFillColor(CGColor(red: 0.2, green: 0.16, blue: 0.3, alpha: 1))
+        context.move(to: CGPoint(x: 0, y: 0))
+        for (x, y) in [(0.0, 0.3), (0.25, 0.55), (0.42, 0.35), (0.66, 0.62), (1.0, 0.28), (1.0, 0.0)] {
+            context.addLine(to: CGPoint(x: w * x, y: h * y))
+        }
+        context.fillPath()
     }
 }

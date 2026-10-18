@@ -5,6 +5,8 @@ extension View {
     /// with ``imagePreviewSource(_:cornerRadius:contentMode:)`` for the selected item and closing back into it.
     ///
     /// Swiping to another image updates `selection`; closing sets it to `nil`, and setting it to `nil` closes.
+    /// `image` gives what each item shows: a ``PreviewImage``, a ``PreviewVideo``, or ``PreviewMedia``
+    /// where an item can be either.
     ///
     /// ```swift
     /// @State private var opened: Photo.ID?
@@ -20,11 +22,11 @@ extension View {
     ///     PreviewImage(url: photo.url, placeholder: photo.thumbnail)
     /// }
     /// ```
-    public func imagePreview<Item: Identifiable>(
+    public func imagePreview<Item: Identifiable, Media: PreviewMediaConvertible>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Item) -> PreviewImage
+        image: @escaping (Item) -> Media
     ) -> some View {
         imagePreview(selection: selection, items: items, configuration: configuration, image: image) { page in
             ImagePreviewDefaultPage(page: page)
@@ -44,11 +46,11 @@ extension View {
     ///     ShareLink(item: photo.url)
     /// }
     /// ```
-    public func imagePreview<Item: Identifiable, Actions: View>(
+    public func imagePreview<Item: Identifiable, Media: PreviewMediaConvertible, Actions: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Item) -> PreviewImage,
+        image: @escaping (Item) -> Media,
         @ViewBuilder actions: @escaping (Item) -> Actions
     ) -> some View {
         imagePreview(selection: selection, items: items, configuration: configuration, image: image, actions: actions) { page in
@@ -70,11 +72,11 @@ extension View {
     ///     }
     /// }
     /// ```
-    public func imagePreview<Item: Identifiable, Page: View>(
+    public func imagePreview<Item: Identifiable, Media: PreviewMediaConvertible, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Item) -> PreviewImage,
+        image: @escaping (Item) -> Media,
         @ViewBuilder page: @escaping (ImagePreviewPage) -> Page
     ) -> some View {
         imagePreview(selection: selection, items: items, configuration: configuration, image: image, actions: { _ in EmptyView() }, page: page)
@@ -82,11 +84,11 @@ extension View {
 
     /// Shows `items` full screen while `selection` is set, with `actions` for the image on screen, on a
     /// page you dress yourself.
-    public func imagePreview<Item: Identifiable, Actions: View, Page: View>(
+    public func imagePreview<Item: Identifiable, Media: PreviewMediaConvertible, Actions: View, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Item) -> PreviewImage,
+        image: @escaping (Item) -> Media,
         @ViewBuilder actions: @escaping (Item) -> Actions,
         @ViewBuilder page: @escaping (ImagePreviewPage) -> Page
     ) -> some View {
@@ -227,12 +229,12 @@ final class PreviewPresenter {
     private var controller: ImagePreviewController?
     private var shownID: AnyHashable?
 
-    func update<Item: Identifiable, Actions: View, Page: View>(
+    func update<Item: Identifiable, Media: PreviewMediaConvertible, Actions: View, Page: View>(
         selection: Binding<Item.ID?>,
         items: [Item],
         configuration: ImagePreviewConfiguration,
         registry: PreviewRegistry,
-        image: @escaping (Item) -> PreviewImage,
+        image: @escaping (Item) -> Media,
         actions: @escaping (Item) -> Actions,
         page: @escaping (ImagePreviewPage) -> Page
     ) {
@@ -272,11 +274,11 @@ final class PreviewPresenter {
     }
 }
 
-struct ImagePreviewModifier<Item: Identifiable, Actions: View, Page: View>: ViewModifier {
+struct ImagePreviewModifier<Item: Identifiable, Media: PreviewMediaConvertible, Actions: View, Page: View>: ViewModifier {
     let selection: Binding<Item.ID?>
     let items: [Item]
     let configuration: ImagePreviewConfiguration
-    let image: (Item) -> PreviewImage
+    let image: (Item) -> Media
     let actions: (Item) -> Actions
     let page: (ImagePreviewPage) -> Page
     @State private var registry = PreviewRegistry()

@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -35,6 +36,42 @@ import AppKit
     #expect(content.still?.size == CGSize(width: 3, height: 2))
     // Decoded once: the next viewer has it at once.
     #expect(ImageContent(PreviewImage(url: url)).still != nil)
+}
+
+@MainActor @Test func aVideoShowsItsPosterUntilItsFirstFrameIsIn() async throws {
+    let url = try await movie(width: 64, height: 48, frames: 6)
+    defer { try? FileManager.default.removeItem(at: url) }
+    let poster = image(width: 8, height: 6)
+    let content = VideoContent(PreviewVideo(url: url, poster: poster))
+    #expect(content.still === poster)
+
+    await withCheckedContinuation { done in
+        content.load { done.resume() }
+    }
+    #expect(content.still?.size == CGSize(width: 64, height: 48))
+}
+
+/// A short H.264 movie of solid frames.
+private func movie(width: Int, height: Int, frames: Int) async throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).mp4")
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height,
+    ])
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
+    writer.add(input)
+    writer.startWriting()
+    writer.startSession(atSourceTime: .zero)
+    for i in 0..<frames {
+        while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(5)) }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        adaptor.append(try #require(buffer), withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 30))
+    }
+    input.markAsFinished()
+    await writer.finishWriting()
+    try #require(writer.status == .completed)
+    return url
 }
 
 private func cgImage(width: Int, height: Int) -> CGImage {

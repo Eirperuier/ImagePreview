@@ -21,6 +21,7 @@ struct FeedView: View {
         .task {
             guard posts.isEmpty else { return }
             posts = Artwork.posts() + [Artwork.remotePost()]
+            if let clip = await Clip.post() { posts.insert(clip, at: 2) }
             await loadRemoteThumbnails()
         }
     }
@@ -34,7 +35,7 @@ struct FeedView: View {
                   let image = PlatformImage(data: data) else { continue }
             posts[p].photos[i].thumbnail = image
             // The viewer starts from the thumbnail it already has.
-            posts[p].photos[i].image = PreviewImage(url: URL(string: "https://picsum.photos/id/\(id)/2400/1600")!, placeholder: image)
+            posts[p].photos[i].image = .image(PreviewImage(url: URL(string: "https://picsum.photos/id/\(id)/2400/1600")!, placeholder: image))
         }
     }
 }
@@ -122,6 +123,15 @@ struct MediaGrid: View {
             .overlay {
                 if let thumbnail = photo.thumbnail {
                     Image(platform: thumbnail).resizable().scaledToFill()
+                }
+            }
+            .overlay {
+                if photo.isVideo {
+                    Image(systemName: "play.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 52, height: 52)
+                        .background(.black.opacity(0.45), in: Circle())
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

@@ -7,6 +7,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 - **Interruptible.** Every transition is a spring on the same state, so a drag can catch the image mid-flight and a new target never makes it jump.
 - **Responsive.** The transition starts on the tap's frame from the thumbnail you already have; full images decode off the main thread and cross-fade in.
 - **A real page.** The viewer is a page with the system's bars: on iOS a view controller presented in a navigation controller of its own, on the Mac the window's own title bar while the images cover it, in the window's own style (a compact title bar stays compact).
+- **Videos too.** A video opens out of its thumbnail and plays; it closes into it from the frame it was on.
 - **Everywhere.** iPhone, iPad, Mac (native AppKit and Mac Catalyst) and Apple Vision Pro, with a SwiftUI and a UIKit/AppKit API.
 
 | | iOS · iPadOS · Catalyst · visionOS | macOS |
@@ -119,6 +120,22 @@ On iOS, put buttons on the bars through `preview.page.navigationItem` and `previ
 
 Pass the thumbnail you already have as the `placeholder`: the transition starts from it on the first frame and the full image cross-fades in when it arrives. Without one, the viewer starts from a picture of the thumbnail as it is on screen.
 
+## Videos
+
+`PreviewVideo(url:poster:)` is a video, a file or a remote URL AVFoundation can play. It flies in and out like an image: from its `poster` (the thumbnail), or its first frame, and when it has played, the frame on screen goes home. It plays while it is the page on screen and the viewer is open, from the start again when it ends, and pauses when you move to another page, drag it or close the viewer.
+
+Return `PreviewMedia` where an item can be an image or a video:
+
+```swift
+.imagePreview(selection: $opened, items: posts) { item in
+    item.isVideo
+        ? .video(PreviewVideo(url: item.url, poster: item.thumbnail))
+        : .image(PreviewImage(url: item.url, placeholder: item.thumbnail))
+}
+```
+
+There are no playback controls yet.
+
 ## Configuration
 
 ```swift
@@ -135,7 +152,7 @@ With Reduce Motion on, the viewer fades in and out in place instead of flying.
 
 ## Example
 
-`Example/ImagePreviewExample.xcodeproj` is a feed of posts with one to five images, drawn on the device, plus a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro. `ImagePreviewExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to see them frame by frame.
+`Example/ImagePreviewExample.xcodeproj` is a feed of posts with one to five images, drawn on the device, a post with a video made on the device, and a post loaded from the network. It runs on iPhone, iPad, Mac and Vision Pro. `ImagePreviewExampleUITests` drives the gestures at finger speed; record the simulator while it runs (`xcrun simctl io booted recordVideo`) to see them frame by frame.
 
 ## License
 

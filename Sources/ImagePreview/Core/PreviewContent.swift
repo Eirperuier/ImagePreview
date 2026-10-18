@@ -20,10 +20,33 @@ protocol PreviewContent: AnyObject {
     /// A view laid over the still at its size and zoomed with it, showing the content live (a
     /// video playing); nil when the still is all there is. Asked each time a page is built.
     func makeView() -> PreviewPlatformView?
+    /// Whether the content is the one on screen, the viewer open and still: a video plays only then.
+    func setActive(_ active: Bool)
 }
 
 extension PreviewContent {
     func makeView() -> PreviewPlatformView? { nil }
+    func setActive(_ active: Bool) {}
+}
+
+/// What one page shows: an image or a video. ``PreviewImage`` and ``PreviewVideo`` are media
+/// themselves; return `PreviewMedia` where an item can be either.
+public struct PreviewMedia: PreviewMediaConvertible {
+    let makeContent: @MainActor () -> PreviewContent
+
+    public static func image(_ image: PreviewImage) -> PreviewMedia { PreviewMedia { ImageContent(image) } }
+    public static func video(_ video: PreviewVideo) -> PreviewMedia { PreviewMedia { VideoContent(video) } }
+
+    public var previewMedia: PreviewMedia { self }
+}
+
+/// An image, a video, or either: what the viewer can show on a page.
+public protocol PreviewMediaConvertible {
+    var previewMedia: PreviewMedia { get }
+}
+
+extension PreviewImage: PreviewMediaConvertible {
+    public var previewMedia: PreviewMedia { .image(self) }
 }
 
 /// An image: the still is all there is, the placeholder until the full image arrives.

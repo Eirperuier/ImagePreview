@@ -49,17 +49,17 @@ public final class ImagePreviewController {
     private let contentProvider: (Int) -> PreviewContent
     private let sourceProvider: (Int) -> PreviewSource?
 
-    public init(
+    public init<Media: PreviewMediaConvertible>(
         count: Int,
         index: Int = 0,
         configuration: ImagePreviewConfiguration = .init(),
-        image: @escaping (Int) -> PreviewImage,
+        image: @escaping (Int) -> Media,
         source: @escaping (Int) -> PreviewSource? = { _ in nil }
     ) {
         self.count = max(count, 0)
         self.context = ImagePreviewContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
         self.configuration = configuration
-        self.contentProvider = { ImageContent(image($0)) }
+        self.contentProvider = { image($0).previewMedia.makeContent() }
         self.sourceProvider = source
         context.onDismiss = { [weak self] in self?.dismiss() }
         context.onSelect = { [weak self] in self?.select($0, animated: true) }
@@ -114,7 +114,11 @@ public final class ImagePreviewController {
 
     private static var retained: [ObjectIdentifier: ImagePreviewController] = [:]
 
-    private var phase: Phase = .closed
+    private var phase: Phase = .closed {
+        didSet { updateActive() }
+    }
+    /// The content playing, if any: the one on screen while the viewer is presented.
+    private var activeIndex: Int?
     private weak var previousResponder: NSResponder?
     /// The backdrop, the images and the image in flight, and what takes the clicks, swipes and keys.
     lazy var stage: NSView = OverlayView(controller: self)
@@ -323,6 +327,14 @@ public final class ImagePreviewController {
         return content
     }
 
+    private func updateActive() {
+        let active = phase == .presented ? index : nil
+        guard active != activeIndex else { return }
+        if let activeIndex { contents[activeIndex]?.setActive(false) }
+        if let active { content(active).setActive(true) }
+        activeIndex = active
+    }
+
     /// The best picture to draw for an index right now.
     private func currentImage(_ i: Int) -> NSImage? {
         content(i).still ?? fallbacks[i]
@@ -378,6 +390,7 @@ public final class ImagePreviewController {
     private func setIndex(_ i: Int) {
         guard i != context.index else { return }
         context.index = i
+        updateActive()
         if phase != .closed, phase != .closing { hideSource() }
         onIndexChange?(i)
     }
@@ -472,7 +485,7 @@ public final class ImagePreviewController {
     private func liftHero() {
         guard let overlay, let page = currentPage else { return }
         let image = page.imageFrame(in: overlay)
-        hero.setImage(page.image, fade: false)
+        hero.setImage(currentImage(index) ?? page.image, fade: false)
         hero.isHidden = false
         setHero(HeroState(image: image, clip: image.intersection(overlay.bounds), cornerRadius: 0, backdrop: 1))
         pager.isHidden = true
