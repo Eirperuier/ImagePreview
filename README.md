@@ -21,7 +21,7 @@ A photo viewer for Apple platforms that opens out of the thumbnail you tapped an
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/Eirperuier/ImagePreview.git", from: "0.3.2")
+.package(url: "https://github.com/Eirperuier/ImagePreview.git", from: "0.3.3")
 ```
 
 Requires iOS 17, Mac Catalyst 17, macOS 14 or visionOS 1.
