@@ -1122,9 +1122,10 @@ final class LayerImageView: NSView {
 
     func setImage(_ image: NSImage?, fade: Bool) {
         self.image = image
+        // The picture alone fades, not the content's view on it.
         if fade {
-            let transition = CATransition()
-            transition.type = .fade
+            let transition = CABasicAnimation(keyPath: "contents")
+            transition.fromValue = layer?.contents
             transition.duration = 0.2
             layer?.add(transition, forKey: "preview.fade")
         }

@@ -252,20 +252,22 @@ public final class ImagePreviewController {
     private func didLoad(at i: Int) {
         guard let image = currentImage(i) else { return }
         if let page = pages[i] {
-            let wasShowing = page.image != nil
+            let before = page.image != nil ? page.imageView.layer.contents : nil
             page.setImage(image)
-            if wasShowing { crossfade(page.imageView) }
+            if let before { crossfade(page.imageView, from: before) }
         }
         if i == index, !hero.isHidden {
+            let before = hero.imageView.layer.contents
             hero.imageView.image = image
-            crossfade(hero.imageView)
+            crossfade(hero.imageView, from: before)
             retargetHero()
         }
     }
 
-    private func crossfade(_ view: UIView) {
-        let fade = CATransition()
-        fade.type = .fade
+    /// Fades the picture in over the one before: the picture alone, not the content's view on it.
+    private func crossfade(_ view: UIView, from before: Any?) {
+        let fade = CABasicAnimation(keyPath: "contents")
+        fade.fromValue = before
         fade.duration = 0.2
         view.layer.add(fade, forKey: "preview.fade")
     }
@@ -890,14 +892,10 @@ private final class HeroView: UIView {
     }
 
     func apply(_ state: HeroState) {
-        // Without the layers inside the content's view animating to their new size behind it.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         clipView.frame = state.clip
         clipView.layer.cornerRadius = min(state.cornerRadius, min(state.clip.width, state.clip.height) / 2)
         imageView.frame = state.image.offsetBy(dx: -state.clip.minX, dy: -state.clip.minY)
         clipView.alpha = state.opacity
-        CATransaction.commit()
     }
 }
 

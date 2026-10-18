@@ -50,6 +50,23 @@ final class GestureTests: XCTestCase {
         sleep(2)
     }
 
+    /// Opens the clip, which plays as it flies, then drags it home, still playing.
+    @MainActor
+    func testVideo() throws {
+        let app = XCUIApplication()
+        app.launch()
+        let play = app.images["Play"]
+        XCTAssertTrue(play.waitForExistence(timeout: 15))
+        let screen = app.windows.firstMatch
+        func at(_ x: CGFloat, _ y: CGFloat) -> XCUICoordinate {
+            screen.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
+        }
+        play.tap()
+        sleep(3)
+        at(0.5, 0.5).press(forDuration: 0.05, thenDragTo: at(0.56, 0.78), withVelocity: 500, thenHoldForDuration: 0.6)
+        sleep(2)
+    }
+
     /// Closes an image with a slow transition and scrolls the page while it flies home:
     /// the image has to stay on course for its thumbnail and land on it where it now is.
     @MainActor
