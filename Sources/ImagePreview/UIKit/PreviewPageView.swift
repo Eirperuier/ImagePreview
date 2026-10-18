@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 import UIKit
 
-/// One image in the viewer: fitted to the screen, pinch and double-tap to zoom.
+/// One page of the viewer: its still fitted to the screen and the content's view over it; pinch and double-tap to zoom.
 final class PreviewPageView: UIScrollView, UIScrollViewDelegate {
     let imageView = UIImageView()
     var maximumZoomFactor: CGFloat = 4 {
@@ -28,6 +28,14 @@ final class PreviewPageView: UIScrollView, UIScrollViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     var image: UIImage? { imageView.image }
+
+    /// The content's view, over the still.
+    func setLiveView(_ view: UIView?) {
+        guard let view else { return }
+        view.frame = imageView.bounds
+        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        imageView.addSubview(view)
+    }
 
     func setImage(_ image: UIImage?) {
         imageView.image = image

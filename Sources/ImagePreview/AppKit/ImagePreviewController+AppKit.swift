@@ -46,7 +46,7 @@ public final class ImagePreviewController {
     var isClosing: Bool { phase == .closing || phase == .closed }
 
     private let count: Int
-    private let imageProvider: (Int) -> PreviewImage
+    private let contentProvider: (Int) -> PreviewContent
     private let sourceProvider: (Int) -> PreviewSource?
 
     public init(
@@ -59,7 +59,7 @@ public final class ImagePreviewController {
         self.count = max(count, 0)
         self.context = ImagePreviewContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
         self.configuration = configuration
-        self.imageProvider = image
+        self.contentProvider = { ImageContent(image($0)) }
         self.sourceProvider = source
         context.onDismiss = { [weak self] in self?.dismiss() }
         context.onSelect = { [weak self] in self?.select($0, animated: true) }
@@ -127,10 +127,9 @@ public final class ImagePreviewController {
     private let hero = HeroView()
     private var pages: [Int: PageView] = [:]
 
-    private var images: [Int: PreviewImage] = [:]
-    private var loaded: [Int: NSImage] = [:]
+    private var contents: [Int: PreviewContent] = [:]
+    /// Pictures of thumbnails as they are on screen, for contents with no still yet.
     private var fallbacks: [Int: NSImage] = [:]
-    private var loads: [Int: Task<Void, Never>] = [:]
 
     private var heroState = HeroState.presented(.zero)
     private var springs: SpringVector?
@@ -313,37 +312,24 @@ public final class ImagePreviewController {
         }
     }
 
-    // MARK: Images
+    // MARK: Contents
 
-    private func image(_ i: Int) -> PreviewImage {
-        if let image = images[i] { return image }
-        let image = imageProvider(i)
-        images[i] = image
-        return image
+    /// The content at an index, loading from the first time it is wanted.
+    private func content(_ i: Int) -> PreviewContent {
+        if let content = contents[i] { return content }
+        let content = contentProvider(i)
+        contents[i] = content
+        content.load { [weak self] in self?.didLoad(at: i) }
+        return content
     }
 
+    /// The best picture to draw for an index right now.
     private func currentImage(_ i: Int) -> NSImage? {
-        if let image = loaded[i] { return image }
-        startLoading(i)
-        return loaded[i] ?? image(i).immediate ?? fallbacks[i]
+        content(i).still ?? fallbacks[i]
     }
 
-    private func startLoading(_ i: Int) {
-        guard loads[i] == nil, loaded[i] == nil else { return }
-        let source = image(i)
-        if let key = source.key, let cached = PreviewImageLoader.cached(key) {
-            loaded[i] = cached
-            return
-        }
-        guard let load = source.load else { return }
-        loads[i] = Task { [weak self] in
-            guard let image = try? await load() else { return }
-            self?.didLoad(image, at: i)
-        }
-    }
-
-    private func didLoad(_ image: NSImage, at i: Int) {
-        loaded[i] = image
+    private func didLoad(at i: Int) {
+        guard let image = currentImage(i) else { return }
         pages[i]?.setImage(image, fade: true)
         if i == index, !hero.isHidden {
             hero.setImage(image, fade: true)
@@ -369,6 +355,7 @@ public final class ImagePreviewController {
             pages[i] = page
             page.frame = pageFrame(i)
             page.setImage(currentImage(i), fade: false)
+            page.setLiveView(content(i).makeView())
         }
         for (i, page) in pages {
             let frame = pageFrame(i)
@@ -443,7 +430,7 @@ public final class ImagePreviewController {
 
     private func sourceState(_ source: PreviewSource?, at frame: CGRect? = nil) -> HeroState? {
         guard let source, let frame = frame ?? visibleFrame(of: source), let size = hero.image?.size else { return nil }
-        let mode = fallbacks[index] != nil && loaded[index] == nil ? PreviewContentMode.fit : source.contentMode
+        let mode = fallbacks[index] != nil && contents[index]?.still == nil ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
     }
 
@@ -522,7 +509,7 @@ public final class ImagePreviewController {
         closingSource?.setHidden(false)
         hiddenSource = nil
         landing = nil
-        loads.values.forEach { $0.cancel() }
+        contents.values.forEach { $0.cancel() }
         onDidDismiss?()
         handOverOrFinish()
     }
@@ -873,8 +860,7 @@ public final class ImagePreviewController {
         }
 
         /// Two-finger swipes: sideways moves between images, up or down closes. The momentum
-        /// that follows a swipe is ignored; the system finishes a swipe between images, and the
-        /// springs carry the velocity of one that closes.
+        /// that follows a swipe is ignored; the springs finish a swipe, carrying its velocity.
         func scrollGesture(_ event: NSEvent) -> Bool {
             guard let controller, event.hasPreciseScrollingDeltas, event.momentumPhase == [] else {
                 return event.momentumPhase != []
@@ -907,7 +893,7 @@ public final class ImagePreviewController {
         }
     }
 
-    /// One image: fitted to the window, pinch or double-click to zoom.
+    /// One page: its still fitted to the window and the content's view over it; pinch or double-click to zoom.
     fileprivate final class PageView: NSScrollView {
         weak var controller: ImagePreviewController?
         let imageView = LayerImageView()
@@ -932,6 +918,14 @@ public final class ImagePreviewController {
 
         var image: NSImage? { imageView.image }
         var isZoomed: Bool { magnification > minMagnification + 0.01 }
+
+        /// The content's view, over the still.
+        func setLiveView(_ view: NSView?) {
+            guard let view else { return }
+            view.frame = imageView.bounds
+            view.autoresizingMask = [.width, .height]
+            imageView.addSubview(view)
+        }
 
         func setImage(_ image: NSImage?, fade: Bool) {
             imageView.setImage(image, fade: fade)

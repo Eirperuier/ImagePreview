@@ -42,7 +42,7 @@ public final class ImagePreviewController {
     var isClosing: Bool { phase == .closing || phase == .closed }
 
     private let count: Int
-    private let imageProvider: (Int) -> PreviewImage
+    private let contentProvider: (Int) -> PreviewContent
     private let sourceProvider: (Int) -> PreviewSource?
 
     /// - Parameters:
@@ -60,7 +60,7 @@ public final class ImagePreviewController {
         self.count = max(count, 0)
         self.context = ImagePreviewContext(index: min(max(index, 0), max(count - 1, 0)), count: max(count, 0))
         self.configuration = configuration
-        self.imageProvider = image
+        self.contentProvider = { ImageContent(image($0)) }
         self.sourceProvider = source
         context.onDismiss = { [weak self] in self?.dismiss() }
         context.onSelect = { [weak self] in self?.select($0, animated: true) }
@@ -126,10 +126,9 @@ public final class ImagePreviewController {
     private var pages: [Int: PreviewPageView] = [:]
     private var isLayingOut = false
 
-    private var images: [Int: PreviewImage] = [:]
-    private var loaded: [Int: UIImage] = [:]
+    private var contents: [Int: PreviewContent] = [:]
+    /// Pictures of thumbnails as they are on screen, for contents with no still yet.
     private var fallbacks: [Int: UIImage] = [:]
-    private var loads: [Int: Task<Void, Never>] = [:]
 
     private var heroState = HeroState.presented(.zero)
     private var springs: SpringVector?
@@ -216,39 +215,24 @@ public final class ImagePreviewController {
                width: pager.bounds.width - configuration.pageSpacing, height: pager.bounds.height)
     }
 
-    // MARK: Images
+    // MARK: Contents
 
-    private func image(_ i: Int) -> PreviewImage {
-        if let image = images[i] { return image }
-        let image = imageProvider(i)
-        images[i] = image
-        return image
+    /// The content at an index, loading from the first time it is wanted.
+    private func content(_ i: Int) -> PreviewContent {
+        if let content = contents[i] { return content }
+        let content = contentProvider(i)
+        contents[i] = content
+        content.load { [weak self] in self?.didLoad(at: i) }
+        return content
     }
 
-    /// The best image to draw for an index right now, starting its load if needed.
+    /// The best picture to draw for an index right now.
     private func currentImage(_ i: Int) -> UIImage? {
-        if let image = loaded[i] { return image }
-        startLoading(i)
-        return loaded[i] ?? image(i).immediate ?? fallbacks[i]
+        content(i).still ?? fallbacks[i]
     }
 
-    private func startLoading(_ i: Int) {
-        guard loads[i] == nil, loaded[i] == nil else { return }
-        let source = image(i)
-        if let key = source.key, let cached = PreviewImageLoader.cached(key) {
-            loaded[i] = cached
-            return
-        }
-        guard let load = source.load else { return }
-        loads[i] = Task { [weak self] in
-            guard let image = try? await load() else { return }
-            let ready = source.key == nil ? await PreviewImageLoader.prepared(image) : image
-            self?.didLoad(ready, at: i)
-        }
-    }
-
-    private func didLoad(_ image: UIImage, at i: Int) {
-        loaded[i] = image
+    private func didLoad(at i: Int) {
+        guard let image = currentImage(i) else { return }
         if let page = pages[i] {
             let wasShowing = page.image != nil
             page.setImage(image)
@@ -283,6 +267,7 @@ public final class ImagePreviewController {
             let page = PreviewPageView(frame: pageFrame(i))
             page.maximumZoomFactor = configuration.maximumZoomScale
             page.setImage(currentImage(i))
+            page.setLiveView(content(i).makeView())
             pager.addSubview(page)
             pages[i] = page
         }
@@ -429,7 +414,7 @@ public final class ImagePreviewController {
     private func sourceState(_ source: PreviewSource?, at frame: CGRect? = nil) -> HeroState? {
         guard let source, let frame = frame ?? visibleFrame(of: source), let size = hero.imageView.image?.size else { return nil }
         // A picture of the thumbnail already has its shape: it is drawn whole.
-        let mode = fallbacks[index] != nil && loaded[index] == nil ? PreviewContentMode.fit : source.contentMode
+        let mode = fallbacks[index] != nil && contents[index]?.still == nil ? PreviewContentMode.fit : source.contentMode
         return .source(frame: frame, imageSize: size, mode: mode, cornerRadius: source.cornerRadius)
     }
 
@@ -438,7 +423,7 @@ public final class ImagePreviewController {
         closingSource?.setHidden(false)
         hiddenSource = nil
         landing = nil
-        loads.values.forEach { $0.cancel() }
+        contents.values.forEach { $0.cancel() }
         onDidDismiss?()
         handOverOrFinish()
     }
