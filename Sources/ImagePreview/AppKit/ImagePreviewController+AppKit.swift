@@ -301,7 +301,8 @@ public final class ImagePreviewController {
         guard let overlay, overlay.bounds.width > 0 else { return }
         if needsOpen { return openIfNeeded() }
         pager.frame = area
-        if pagerSprings == nil { pagerOffset = CGFloat(index) * pageStride }
+        // A swipe or a spring moving the pager has it between images; changing the image re-lays out the stage.
+        if pagerSprings == nil, !isSwiping, gesture != .paging { pagerOffset = CGFloat(index) * pageStride }
         for page in pages.values { page.refit() }
         layoutPages()
         switch phase {
@@ -590,6 +591,11 @@ public final class ImagePreviewController {
         default: return gesture = .none
         }
         stopSprings()
+        // The pager, now hidden, waits on the image for when the image goes back.
+        stopSwipe()
+        pagerSprings = nil
+        pagerOffset = CGFloat(index) * pageStride
+        layoutPages()
         giveWindowBack()
         phase = .dragging
         drag = DismissDrag(start: heroState, anchor: point, axis: axis, container: area.size)
@@ -651,8 +657,12 @@ public final class ImagePreviewController {
     /// has turned off swiping between pages; then the pager's own spring finishes the swipe.
     fileprivate func trackSwipe(_ event: NSEvent) -> Bool {
         guard gesture == .paging, NSEvent.isSwipeTrackingFromScrollEventsEnabled else { return false }
-        let start = Int((pagerOffset / pageStride).rounded())
-        let base = CGFloat(start) * pageStride
+        // The swipe starts where the pager is, which is between images when one starts before the
+        // last has settled, and goes to the image before or after the one it was headed for.
+        let from = pagerOffset
+        let start = Int((from / pageStride).rounded())
+        let previous = start > 0 ? CGFloat(start - 1) * pageStride : from - pageStride
+        let next = start < count - 1 ? CGFloat(start + 1) * pageStride : from + pageStride
         swipe += 1
         let swipe = swipe
         isSwiping = true
@@ -668,22 +678,19 @@ public final class ImagePreviewController {
                 return
             }
             if isComplete { self.isSwiping = false }
-            self.pagerOffset = base - amount * self.pageStride
+            self.pagerOffset = from - amount * (amount > 0 ? from - previous : next - from)
             self.layoutPages()
-            if isComplete {
-                self.pagerOffset = CGFloat(self.index) * self.pageStride
-                self.layoutPages()
-            }
+            // Called back where it started between images: the pager's spring finishes.
+            if isComplete { self.settlePager(at: self.index, velocity: 0) }
         }
         return true
     }
 
-    /// Stops a swipe the system is still finishing, leaving the pager on the image it was headed for.
+    /// Stops a swipe the system is still finishing, leaving the pager where it is.
     private func stopSwipe() {
         guard isSwiping else { return }
         swipe += 1
         isSwiping = false
-        pagerOffset = CGFloat(index) * pageStride
     }
 
     fileprivate func handleClick(at point: CGPoint) {
